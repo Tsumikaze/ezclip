@@ -155,6 +155,12 @@ pub struct Config {
     pub microphone: bool,
     pub hotkey: Hotkey,
     pub clips_dir: PathBuf,
+    /// Save into a subfolder matching the game (e.g. E:\videos\Valorant).
+    pub game_folders: bool,
+    /// Create a folder for games that don't have one yet.
+    pub new_game_folders: bool,
+    /// Put each new clip on the clipboard (ready to paste into Discord).
+    pub copy_after_save: bool,
     pub sound_on_save: bool,
     pub notify_on_save: bool,
 }
@@ -171,8 +177,11 @@ impl Default for Config {
             microphone: false,
             hotkey: Hotkey::default(),
             clips_dir: crate::win::videos_dir().join("ezclip"),
+            game_folders: true,
+            new_game_folders: true,
+            copy_after_save: false,
             sound_on_save: true,
-            notify_on_save: true,
+            notify_on_save: false,
         }
     }
 }

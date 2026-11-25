@@ -126,12 +126,16 @@ impl ClipBuffer {
 
     /// Copy out (cheaply — packets are reference counted) the last `secs` seconds.
     pub fn snapshot(&self, secs: u32) -> Option<Snapshot> {
+        let newest = self.0.lock().unwrap().video.back()?.pts;
+        self.snapshot_from(newest - secs as i64 * TICKS)
+    }
+
+    /// Everything from the keyframe at or before `limit` (100 ns) up to now.
+    pub fn snapshot_from(&self, limit: i64) -> Option<Snapshot> {
         let g = self.0.lock().unwrap();
-        let newest = g.video.back()?.pts;
-        if g.sps.is_empty() || g.pps.is_empty() {
+        if g.video.is_empty() || g.sps.is_empty() || g.pps.is_empty() {
             return None;
         }
-        let limit = newest - secs as i64 * TICKS;
         // Latest keyframe at or before the limit; otherwise the oldest we have.
         let start = g
             .video
@@ -221,6 +225,9 @@ mod tests {
         }
         let s = b.snapshot(3).unwrap();
         assert!(s.video[0].key);
+        // Extending from an earlier start returns the longer range.
+        let e = b.snapshot_from(s.video[0].pts - 1).unwrap();
+        assert!(e.video[0].pts < s.video[0].pts && e.video.len() > s.video.len());
         let span = s.video.last().unwrap().pts - s.video[0].pts;
         assert!(span >= 3 * TICKS && span < 4 * TICKS + TICKS, "span {span}");
     }

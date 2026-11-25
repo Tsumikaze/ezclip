@@ -10,6 +10,7 @@ compile_error!("ezclip only supports Windows");
 
 mod config;
 mod display;
+mod game_match;
 mod icon;
 mod log;
 mod recorder;

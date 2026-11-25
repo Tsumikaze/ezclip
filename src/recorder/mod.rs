@@ -3,15 +3,17 @@
 mod audio;
 mod buffer;
 mod encoder;
+mod game;
 mod mux;
 mod video;
 
 use crate::config::{Config, Status};
 use crate::win::*;
-use buffer::ClipBuffer;
+use buffer::{ClipBuffer, Snapshot};
 use std::cell::RefCell;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::Instant;
@@ -29,6 +31,24 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 const WM_TRAY: u32 = WM_APP + 10;
 const WM_SAVED: u32 = WM_APP + 11;
+const WM_STATUS: u32 = WM_APP + 12;
+/// Pressing the hotkey again within this many seconds of the last press
+/// extends the previous clip instead of creating a new one.
+const EXTEND_SECS: u32 = 10;
+/// Presses closer together than this are treated as one (accidental double tap).
+const DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// The recorder window, so worker threads can poke it.
+static HWND_RAW: AtomicIsize = AtomicIsize::new(0);
+
+fn post(msg: u32) {
+    let h = HWND_RAW.load(Ordering::Relaxed);
+    if h != 0 {
+        unsafe {
+            let _ = PostMessageW(HWND(h as _), msg, WPARAM(0), LPARAM(0));
+        }
+    }
+}
 const HOTKEY_ID: i32 = 1;
 const TRAY_ID: u32 = 1;
 const CMD_OPEN: usize = 1;
@@ -48,6 +68,11 @@ impl StatusSink {
         f(&mut s);
         let _ = std::fs::create_dir_all(crate::config::app_dir());
         let _ = std::fs::write(crate::config::status_path(), serde_json::to_vec(&*s).unwrap_or_default());
+        drop(s);
+        post(WM_STATUS);
+    }
+    fn get(&self) -> Status {
+        self.0.lock().unwrap().clone()
     }
     pub fn video_ok(&self, detail: &str) {
         self.update(|s| {
@@ -88,7 +113,7 @@ impl Pipeline {
         let stop = Arc::new(AtomicBool::new(false));
         let start = Instant::now();
         buf.clear();
-        buf.set_keep_seconds(cfg.clip_seconds);
+        buf.set_keep_seconds(cfg.clip_seconds + EXTEND_SECS);
         let mut threads = Vec::new();
         {
             let (stop, buf, status) = (stop.clone(), buf.clone(), status.clone());
@@ -141,8 +166,30 @@ struct State {
     buf: Arc<ClipBuffer>,
     status: StatusSink,
     pipeline: Option<Pipeline>,
-    icon: HICON,
+    icons: [HICON; 3],
+    tray_state: crate::icon::State,
     taskbar_created: u32,
+    saver: Sender<SaveJob>,
+    last_press: Option<Instant>,
+    last_save: Option<LastSave>,
+}
+
+struct LastSave {
+    at: Instant,
+    start_pts: i64,
+    path: PathBuf,
+}
+
+struct SaveJob {
+    snap: Snapshot,
+    path: PathBuf,
+    extended: bool,
+}
+
+struct Saved {
+    path: PathBuf,
+    secs: f64,
+    extended: bool,
 }
 
 thread_local! {
@@ -150,7 +197,7 @@ thread_local! {
 }
 
 /// Results from save threads, picked up on the UI thread via WM_SAVED.
-static SAVE_RESULTS: Mutex<Vec<Result<(PathBuf, f64), String>>> = Mutex::new(Vec::new());
+static SAVE_RESULTS: Mutex<Vec<Result<Saved, String>>> = Mutex::new(Vec::new());
 
 fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> Option<R> {
     STATE.with(|s| s.try_borrow_mut().ok().and_then(|mut g| g.as_mut().map(f)))
@@ -189,14 +236,33 @@ pub fn run() -> Result<(), String> {
         )
         .map_err(|e| e.to_string())?;
 
+        HWND_RAW.store(hwnd.0 as isize, Ordering::Relaxed);
         let cfg = Config::load();
         let status = StatusSink::default();
         let buf = Arc::new(ClipBuffer::default());
-        let icon = app_icon();
+        let icons = [
+            state_icon(crate::icon::State::Recording),
+            state_icon(crate::icon::State::Starting),
+            state_icon(crate::icon::State::Problem),
+        ];
         let taskbar_created = RegisterWindowMessageW(w!("TaskbarCreated"));
+        game::start_tracking();
+        let saver = start_saver();
         let pipeline = Pipeline::start(&cfg, &buf, &status);
         STATE.with(|s| {
-            *s.borrow_mut() = Some(State { hwnd, cfg, buf, status, pipeline: Some(pipeline), icon, taskbar_created });
+            *s.borrow_mut() = Some(State {
+                hwnd,
+                cfg,
+                buf,
+                status,
+                pipeline: Some(pipeline),
+                icons,
+                tray_state: crate::icon::State::Starting,
+                taskbar_created,
+                saver,
+                last_press: None,
+                last_save: None,
+            });
         });
         with_state(|s| {
             add_tray(s);
@@ -224,15 +290,10 @@ pub fn run() -> Result<(), String> {
     Ok(())
 }
 
-unsafe fn app_icon() -> HICON {
-    // Embedded resource #1 (see build.rs); fall back to drawing it at runtime.
-    if let Ok(h) = GetModuleHandleW(None) {
-        if let Ok(i) = LoadImageW(h, PCWSTR(1 as _), IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR) {
-            return HICON(i.0);
-        }
-    }
-    let size = 32u32;
-    let rgba = crate::icon::rgba(size);
+/// Tray icon for a recorder state, drawn at the system's small-icon size.
+unsafe fn state_icon(state: crate::icon::State) -> HICON {
+    let size = GetSystemMetrics(SM_CXSMICON).clamp(16, 64) as u32;
+    let rgba = crate::icon::rgba_state(size, state);
     let mut bgra = Vec::with_capacity(rgba.len());
     for p in rgba.chunks(4) {
         bgra.extend_from_slice(&[p[2], p[1], p[0], p[3]]);
@@ -245,6 +306,34 @@ unsafe fn app_icon() -> HICON {
     let _ = DeleteObject(color);
     let _ = DeleteObject(mask);
     icon
+}
+
+fn icon_for(s: &State) -> HICON {
+    match s.tray_state {
+        crate::icon::State::Recording => s.icons[0],
+        crate::icon::State::Starting => s.icons[1],
+        crate::icon::State::Problem => s.icons[2],
+    }
+}
+
+/// Recompute the tray state from the pipeline status and refresh the icon.
+fn refresh_tray(s: &mut State) {
+    use crate::icon::State as T;
+    let st = s.status.get();
+    s.tray_state = if !st.error.is_empty() {
+        T::Problem
+    } else if st.ok {
+        T::Recording
+    } else {
+        T::Starting
+    };
+    let mut nid = base_nid(s);
+    nid.uFlags = NIF_ICON | NIF_TIP;
+    nid.hIcon = icon_for(s);
+    copy_wstr(&mut nid.szTip, &tooltip(s));
+    unsafe {
+        let _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
+    }
 }
 
 fn copy_wstr(dst: &mut [u16], s: &str) {
@@ -263,26 +352,26 @@ fn base_nid(s: &State) -> NOTIFYICONDATAW {
 }
 
 fn tooltip(s: &State) -> String {
-    format!("ezclip — {} saves the last {} s", s.cfg.hotkey.label(), s.cfg.clip_seconds)
+    use crate::icon::State as T;
+    match s.tray_state {
+        T::Recording => format!("ezclip · recording\n{} saves the last {} s", s.cfg.hotkey.label(), s.cfg.clip_seconds),
+        T::Starting => "ezclip · starting…".to_string(),
+        T::Problem => {
+            let e = s.status.get().error;
+            let short: String = e.chars().take(100).collect();
+            format!("ezclip · problem\n{short}")
+        }
+    }
 }
 
 fn add_tray(s: &State) {
     let mut nid = base_nid(s);
     nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     nid.uCallbackMessage = WM_TRAY;
-    nid.hIcon = s.icon;
+    nid.hIcon = icon_for(s);
     copy_wstr(&mut nid.szTip, &tooltip(s));
     unsafe {
         let _ = Shell_NotifyIconW(NIM_ADD, &nid);
-    }
-}
-
-fn update_tray_tip(s: &State) {
-    let mut nid = base_nid(s);
-    nid.uFlags = NIF_TIP;
-    copy_wstr(&mut nid.szTip, &tooltip(s));
-    unsafe {
-        let _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
     }
 }
 
@@ -297,7 +386,7 @@ fn notify(s: &State, title: &str, text: &str) {
     let mut nid = base_nid(s);
     nid.uFlags = NIF_INFO;
     nid.dwInfoFlags = NIIF_USER | NIIF_NOSOUND | NIIF_LARGE_ICON;
-    nid.hBalloonIcon = s.icon;
+    nid.hBalloonIcon = s.icons[0];
     copy_wstr(&mut nid.szInfoTitle, title);
     copy_wstr(&mut nid.szInfo, text);
     unsafe {
@@ -370,55 +459,97 @@ fn play_chirp() {
     }
 }
 
-fn save_clip(s: &State) {
+/// One thread writes clips, in order, so an "extend" always lands after the
+/// clip it replaces.
+fn start_saver() -> Sender<SaveJob> {
+    let (tx, rx) = channel::<SaveJob>();
+    std::thread::Builder::new()
+        .name("saver".into())
+        .spawn(move || {
+            while let Ok(job) = rx.recv() {
+                let result = write_clip(&job);
+                match &result {
+                    Ok(s) => crate::log::write(&format!(
+                        "{} {} ({:.1} s)",
+                        if s.extended { "extended" } else { "saved" },
+                        s.path.display(),
+                        s.secs
+                    )),
+                    Err(e) => crate::log::write(&format!("save failed: {e}")),
+                }
+                SAVE_RESULTS.lock().unwrap().push(result);
+                post(WM_SAVED);
+            }
+        })
+        .unwrap();
+    tx
+}
+
+fn write_clip(job: &SaveJob) -> Result<Saved, String> {
+    let dir = job.path.parent().ok_or("bad path")?;
+    std::fs::create_dir_all(dir).map_err(|e| format!("can't create {}: {e}", dir.display()))?;
+    // Write under a temp name so nothing ever sees a half-written file;
+    // the rename also atomically replaces the old clip when extending.
+    let tmp = job.path.with_extension("mp4.part");
+    let secs = mux::write_mp4(&tmp, &job.snap).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })?;
+    if job.extended {
+        let _ = std::fs::remove_file(&job.path);
+    }
+    std::fs::rename(&tmp, &job.path).map_err(|e| e.to_string())?;
+    Ok(Saved { path: job.path.clone(), secs, extended: job.extended })
+}
+
+fn save_clip(s: &mut State) {
+    let now = Instant::now();
+    if s.last_press.is_some_and(|t| now.duration_since(t) < DEBOUNCE) {
+        return; // accidental double tap
+    }
+    s.last_press = Some(now);
+
+    // Pressed again shortly after a save: make that clip longer instead.
+    if let Some(last) = &mut s.last_save {
+        if now.duration_since(last.at) < std::time::Duration::from_secs(EXTEND_SECS as u64) {
+            if let Some(snap) = s.buf.snapshot_from(last.start_pts) {
+                last.at = now;
+                let _ = s.saver.send(SaveJob { snap, path: last.path.clone(), extended: true });
+                return;
+            }
+        }
+    }
+
     let Some(snap) = s.buf.snapshot(s.cfg.clip_seconds) else {
         notify(s, "Nothing to save yet", "ezclip is still starting up — try again in a moment.");
         return;
     };
-    let dir = s.cfg.clips_dir.clone();
-    let hwnd = s.hwnd.0 as isize;
-    std::thread::spawn(move || {
-        let result = (|| {
-            std::fs::create_dir_all(&dir).map_err(|e| format!("can't create {}: {e}", dir.display()))?;
-            let stamp = chrono::Local::now().format("%Y-%m-%d %H-%M-%S");
-            let mut path = dir.join(format!("Clip {stamp}.mp4"));
-            let mut n = 2;
-            while path.exists() {
-                path = dir.join(format!("Clip {stamp} ({n}).mp4"));
-                n += 1;
-            }
-            // Write under a temp name so the UI never shows a half-written file.
-            let tmp = path.with_extension("mp4.part");
-            let dur = mux::write_mp4(&tmp, &snap).inspect_err(|_| {
-                let _ = std::fs::remove_file(&tmp);
-            })?;
-            std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
-            Ok((path, dur))
-        })();
-        match &result {
-            Ok((p, d)) => crate::log::write(&format!("saved {} ({d:.1} s)", p.display())),
-            Err(e) => crate::log::write(&format!("save failed: {e}")),
-        }
-        SAVE_RESULTS.lock().unwrap().push(result);
-        unsafe {
-            let _ = PostMessageW(HWND(hwnd as _), WM_SAVED, WPARAM(0), LPARAM(0));
-        }
-    });
+    let path = game::clip_path(&s.cfg);
+    s.last_save = Some(LastSave { at: now, start_pts: snap.video[0].pts, path: path.clone() });
+    let _ = s.saver.send(SaveJob { snap, path, extended: false });
 }
 
 fn on_saved(s: &State) {
     let results: Vec<_> = SAVE_RESULTS.lock().unwrap().drain(..).collect();
     for r in results {
         match r {
-            Ok((path, dur)) => {
+            Ok(saved) => {
                 if s.cfg.sound_on_save {
                     play_chirp();
                 }
+                if s.cfg.copy_after_save {
+                    copy_files_to_clipboard(&[&saved.path]);
+                }
                 if s.cfg.notify_on_save {
-                    let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-                    notify(s, &format!("Clip saved · {:.0} s", dur), &name);
+                    let name = saved.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                    let title = if saved.extended {
+                        format!("Clip extended · {:.0} s", saved.secs)
+                    } else {
+                        format!("Clip saved · {:.0} s", saved.secs)
+                    };
+                    notify(s, &title, &name);
                 }
             }
+            // Failures are always shown, even with notifications off.
             Err(e) => notify(s, "Couldn't save clip", &e),
         }
     }
@@ -428,7 +559,7 @@ fn reload(s: &mut State) {
     let new = Config::load();
     let restart = new.capture_key() != s.cfg.capture_key();
     let hotkey_changed = new.hotkey != s.cfg.hotkey;
-    s.buf.set_keep_seconds(new.clip_seconds);
+    s.buf.set_keep_seconds(new.clip_seconds + EXTEND_SECS);
     s.cfg = new;
     if restart {
         crate::log::write("capture settings changed, restarting pipeline");
@@ -440,7 +571,7 @@ fn reload(s: &mut State) {
     if hotkey_changed {
         register_hotkey(s);
     }
-    update_tray_tip(s);
+    refresh_tray(s);
 }
 
 fn show_menu(hwnd: HWND, hotkey: &str) -> usize {
@@ -466,7 +597,7 @@ fn run_command(cmd: usize) {
     match cmd {
         CMD_OPEN => spawn_self("--ui"),
         CMD_SAVE => {
-            with_state(|s| save_clip(s));
+            with_state(save_clip);
         }
         CMD_FOLDER => {
             if let Some(dir) = with_state(|s| s.cfg.clips_dir.clone()) {
@@ -482,7 +613,11 @@ fn run_command(cmd: usize) {
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
         WM_HOTKEY if wp.0 as i32 == HOTKEY_ID => {
-            with_state(|s| save_clip(s));
+            with_state(save_clip);
+            LRESULT(0)
+        }
+        WM_STATUS => {
+            with_state(refresh_tray);
             LRESULT(0)
         }
         WM_SAVED => {
@@ -494,7 +629,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             LRESULT(0)
         }
         WM_EZ_SAVE => {
-            with_state(|s| save_clip(s));
+            with_state(save_clip);
             LRESULT(0)
         }
         WM_EZ_QUIT => {
@@ -522,7 +657,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             // Explorer restarted: put the tray icon back.
             let tc = with_state(|s| s.taskbar_created).unwrap_or(0);
             if tc != 0 && msg == tc {
-                with_state(|s| add_tray(s));
+                with_state(|s| {
+                    add_tray(s);
+                    refresh_tray(s);
+                });
                 return LRESULT(0);
             }
             DefWindowProcW(hwnd, msg, wp, lp)

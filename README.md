@@ -3,7 +3,9 @@
 Fast, simple clipping for Windows. ezclip quietly keeps the last few seconds of
 your screen **and audio** in memory. Press a hotkey and they're saved as an MP4.
 
-- **Alt + F10** saves the last 30 seconds (both are configurable)
+- **Alt + F10** saves the last 30 seconds (both are configurable). Press again within 10 s to make that clip longer
+- Clips are named after the game and filed into your game folders (e.g. `E:\videos\Valorant`)
+- One click copies a clip so you can paste it straight into Discord
 - Starts with Windows and lives in the system tray
 - Uses your GPU's hardware video encoder (AMD, NVIDIA or Intel), so games keep their FPS
 - Records system audio (game, music, voice chat) and, optionally, your microphone
@@ -24,12 +26,20 @@ in **Settings → General**. If you move the exe later, toggle it off and on aga
 | Action | How |
 | --- | --- |
 | Save a clip | Press **Alt + F10**, or click **Save last 30 s** in the window, or right-click the tray icon → *Save clip* |
-| See your clips | Click the tray icon. Click a thumbnail to play it; rename, show in folder or delete (to the Recycle Bin) from the list |
+| See your clips | Click the tray icon. Click a thumbnail to play it. **Copy** puts it on the clipboard for Discord. **···** (or right-click) has rename, show in folder and delete (to the Recycle Bin) |
+| Make a clip longer | Press the hotkey again within 10 s: the clip you just saved is extended |
 | Change hotkey / length / quality | **Settings**. Changes apply instantly |
 | Quit | Right-click the tray icon → *Quit* |
 
-Clips are saved to `Videos\ezclip` by default. A short chirp and a notification
-confirm each save (both can be turned off).
+Clips are saved to `Videos\ezclip` by default. Change it in **Settings → Saving**:
+type a path (e.g. `E:\videos`) or browse. With *Sort into game folders* on, each clip
+goes into the subfolder matching the game you're in (`E:\videos\Valorant`, `E:\videos\Counter-Strike 2`, ...).
+Existing folders are matched automatically. New games get a folder of their own, and
+clips from the desktop are saved in the main folder.
+
+A short chirp confirms each save. Nothing pops up on screen, though you can turn
+notifications on. The tray icon's dot shows the state: **red** = recording,
+**grey** = starting, **amber** = problem (hover it for details).
 
 ## Settings
 

@@ -183,3 +183,64 @@ pub fn single_instance(name: &str) -> Option<HANDLE> {
         }
     }
 }
+
+// -------------------------------------------------------------- clipboard ---
+
+/// Put files on the clipboard the way Explorer's "Copy" does, so Ctrl+V in
+/// Discord, a browser or Explorer attaches/pastes them.
+pub fn copy_files_to_clipboard(paths: &[&Path]) -> bool {
+    use windows::Win32::System::DataExchange::*;
+    use windows::Win32::System::Memory::*;
+    use windows::Win32::System::Ole::CF_HDROP;
+
+    let mut list: Vec<u16> = Vec::new();
+    for p in paths {
+        list.extend(p.as_os_str().encode_wide_vec());
+        list.push(0);
+    }
+    list.push(0);
+    let header = std::mem::size_of::<DROPFILES>();
+    let bytes = header + list.len() * 2;
+    unsafe {
+        let Ok(hmem) = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, bytes) else { return false };
+        let ptr = GlobalLock(hmem) as *mut u8;
+        if ptr.is_null() {
+            return false;
+        }
+        let df = DROPFILES { pFiles: header as u32, pt: POINT::default(), fNC: false.into(), fWide: true.into() };
+        std::ptr::write_unaligned(ptr as *mut DROPFILES, df);
+        std::ptr::copy_nonoverlapping(list.as_ptr() as *const u8, ptr.add(header), list.len() * 2);
+        let _ = GlobalUnlock(hmem);
+
+        // "Preferred DropEffect" = copy (not move) for Explorer.
+        let effect_fmt = RegisterClipboardFormatW(windows::core::w!("Preferred DropEffect"));
+        let heff = GlobalAlloc(GMEM_MOVEABLE, 4).ok();
+        if let Some(h) = heff {
+            let p = GlobalLock(h) as *mut u32;
+            if !p.is_null() {
+                *p = 1; // DROPEFFECT_COPY
+                let _ = GlobalUnlock(h);
+            }
+        }
+
+        let mut opened = false;
+        for _ in 0..10 {
+            if OpenClipboard(HWND::default()).is_ok() {
+                opened = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        if !opened {
+            let _ = GlobalFree(hmem);
+            return false;
+        }
+        let _ = EmptyClipboard();
+        let ok = SetClipboardData(CF_HDROP.0 as u32, HANDLE(hmem.0)).is_ok();
+        if let Some(h) = heff {
+            let _ = SetClipboardData(effect_fmt, HANDLE(h.0));
+        }
+        let _ = CloseClipboard();
+        ok
+    }
+}

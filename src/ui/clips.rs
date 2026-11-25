@@ -15,6 +15,8 @@ use windows::Win32::UI::Shell::*;
 pub struct Clip {
     pub path: PathBuf,
     pub name: String,
+    /// Game folder the clip lives in (None = directly in the clips folder).
+    pub game: Option<String>,
     pub modified: SystemTime,
     pub size: u64,
     pub duration: Option<f64>,
@@ -57,15 +59,28 @@ impl Library {
         Self { clips: Vec::new(), tx, rx }
     }
 
-    /// Re-read the folder, keeping already loaded thumbnails.
+    /// Re-read the clips folder and its game subfolders (one level deep),
+    /// keeping already loaded thumbnails.
     pub fn scan(&mut self, dir: &Path) {
         let mut old: HashMap<PathBuf, Clip> = self.clips.drain(..).map(|c| (c.path.clone(), c)).collect();
+        let mut dirs: Vec<(PathBuf, Option<String>)> = vec![(dir.to_path_buf(), None)];
         if let Ok(rd) = std::fs::read_dir(dir) {
             for e in rd.flatten() {
+                if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                    dirs.push((e.path(), Some(e.file_name().to_string_lossy().to_string())));
+                }
+            }
+        }
+        for (d, game) in dirs {
+            let Ok(rd) = std::fs::read_dir(&d) else { continue };
+            for e in rd.flatten() {
                 let path = e.path();
-                let is_mp4 = path.extension().is_some_and(|x| x.eq_ignore_ascii_case("mp4"));
+                let is_video = path
+                    .extension()
+                    .and_then(|x| x.to_str())
+                    .is_some_and(|x| ["mp4", "mkv", "mov"].iter().any(|v| x.eq_ignore_ascii_case(v)));
                 let Ok(meta) = e.metadata() else { continue };
-                if !is_mp4 || !meta.is_file() {
+                if !is_video || !meta.is_file() {
                     continue;
                 }
                 let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
@@ -74,6 +89,7 @@ impl Library {
                     Some(c) if c.size == size && c.modified == modified => self.clips.push(c),
                     _ => self.clips.push(Clip {
                         name: path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(),
+                        game: game.clone(),
                         path,
                         modified,
                         size,

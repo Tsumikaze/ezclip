@@ -69,15 +69,6 @@ pub fn button(ui: &mut Ui, text: &str) -> Response {
     ui.add(b).on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-pub fn danger_button(ui: &mut Ui, text: &str) -> Response {
-    let b = egui::Button::new(RichText::new(text).color(Color32::WHITE).family(bold()).size(13.0))
-        .fill(RED)
-        .stroke(Stroke::NONE)
-        .rounding(egui::Rounding::same(6.0))
-        .min_size(Vec2::new(0.0, 30.0));
-    ui.add(b).on_hover_cursor(egui::CursorIcon::PointingHand)
-}
-
 /// A settings row: title + description on the left, control on the right.
 /// Uses fixed rectangles so a wide control can never stretch the page.
 pub fn setting_row(ui: &mut Ui, title: &str, desc: &str, control: impl FnOnce(&mut Ui)) {

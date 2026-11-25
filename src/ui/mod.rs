@@ -32,7 +32,7 @@ struct App {
     capturing_hotkey: bool,
     hotkey_hint: Option<String>,
     renaming: Option<(PathBuf, String)>,
-    confirm_delete: Option<(PathBuf, Instant)>,
+    folder_edit: String,
     toast: Option<(String, Instant)>,
     logo: egui::TextureHandle,
 }
@@ -70,6 +70,7 @@ impl App {
             .enumerate()
             .map(|(i, m)| (crate::display::label(i, m), m.width, m.height))
             .collect();
+        let folder_edit = cfg.clips_dir.display().to_string();
         let mut app = Self {
             cfg,
             page: Page::Clips,
@@ -83,7 +84,7 @@ impl App {
             capturing_hotkey: false,
             hotkey_hint: None,
             renaming: None,
-            confirm_delete: None,
+            folder_edit,
             toast: None,
             logo,
         };
@@ -335,7 +336,7 @@ impl App {
         // Title + meta
         let renaming_this = self.renaming.as_ref().is_some_and(|(p, _)| *p == path);
         ui.vertical(|ui| {
-            ui.set_width((ui.available_width() - 300.0).max(120.0));
+            ui.set_width((ui.available_width() - 200.0).max(120.0));
             ui.add_space(18.0);
             if renaming_this {
                 let (_, buf) = self.renaming.as_mut().unwrap();
@@ -349,32 +350,56 @@ impl App {
             } else {
                 ui.add(egui::Label::new(RichText::new(&c.name).size(15.0).family(bold()).color(TEXT)).truncate());
             }
-            ui.label(RichText::new(format!("{}  ·  {}", fmt_date(c.modified), fmt_size(c.size))).size(12.5).color(TEXT_DIM));
+            let meta = match &c.game {
+                Some(g) => format!("{g}  ·  {}  ·  {}", fmt_date(c.modified), fmt_size(c.size)),
+                None => format!("{}  ·  {}", fmt_date(c.modified), fmt_size(c.size)),
+            };
+            ui.add(egui::Label::new(RichText::new(meta).size(12.5).color(TEXT_DIM)).truncate());
         });
 
-        // Actions (right side)
+        // Actions (right side): the two common ones visible, the rest in a menu.
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.add_space(6.0);
-            let confirming = self.confirm_delete.as_ref().is_some_and(|(p, t)| *p == path && t.elapsed() < Duration::from_secs(4));
-            if confirming {
-                if danger_button(ui, "Confirm delete").clicked() {
-                    act = Some(ClipAction::Delete(path.clone()));
-                }
-            } else if button(ui, "Delete").clicked() {
-                act = Some(ClipAction::AskDelete(path.clone()));
-            }
             if renaming_this {
                 if button(ui, "Save name").clicked() {
                     act = Some(ClipAction::CommitRename);
                 }
-            } else if button(ui, "Rename").clicked() {
-                act = Some(ClipAction::StartRename(path.clone()));
+            } else {
+                let more = egui::Button::new(RichText::new("···").size(15.0).family(bold()))
+                    .fill(CONTROL)
+                    .stroke(egui::Stroke::new(1.0_f32, BORDER))
+                    .rounding(6.0)
+                    .min_size(Vec2::new(36.0, 30.0));
+                let r = ui.add(more).on_hover_cursor(egui::CursorIcon::PointingHand);
+                egui::popup::popup_below_widget(
+                    ui,
+                    ui.make_persistent_id(("more", &path)),
+                    &r,
+                    egui::PopupCloseBehavior::CloseOnClick,
+                    |ui| {
+                        ui.set_min_width(170.0);
+                        if let Some(a) = clip_menu(ui, &path) {
+                            act = Some(a);
+                        }
+                    },
+                );
+                if r.clicked() {
+                    ui.memory_mut(|m| m.toggle_popup(ui.make_persistent_id(("more", &path))));
+                }
             }
-            if button(ui, "Show in folder").clicked() {
-                act = Some(ClipAction::Reveal(path.clone()));
+            if button(ui, "Copy").on_hover_text("Copy to paste into Discord, a browser or Explorer").clicked() {
+                act = Some(ClipAction::Copy(path.clone()));
             }
             if button(ui, "Play").clicked() {
                 act = Some(ClipAction::Play(path.clone()));
+            }
+        });
+
+        // Right-click anywhere on the row: same menu.
+        row_resp.context_menu(|ui| {
+            ui.set_min_width(170.0);
+            if let Some(a) = clip_menu(ui, &path) {
+                act = Some(a);
             }
         });
 
@@ -388,9 +413,14 @@ impl App {
         match a {
             ClipAction::Play(p) => win::open_path(&p),
             ClipAction::Reveal(p) => win::show_in_folder(&p),
-            ClipAction::AskDelete(p) => self.confirm_delete = Some((p, Instant::now())),
+            ClipAction::Copy(p) => {
+                if win::copy_files_to_clipboard(&[&p]) {
+                    self.toast("Copied — paste it into Discord with Ctrl+V");
+                } else {
+                    self.toast("Couldn't access the clipboard — try again");
+                }
+            }
             ClipAction::Delete(p) => {
-                self.confirm_delete = None;
                 if win::recycle(&p) {
                     self.toast("Moved to Recycle Bin");
                 } else {
@@ -412,7 +442,8 @@ impl App {
                         self.renaming = Some((p, name));
                         return;
                     }
-                    let target = p.with_file_name(format!("{name}.mp4"));
+                    let ext = p.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_else(|| "mp4".into());
+                    let target = p.with_file_name(format!("{name}.{ext}"));
                     if target != p {
                         if target.exists() {
                             self.toast("A clip with that name already exists");
@@ -447,7 +478,7 @@ impl App {
                     changed |= chips(ui, &mut self.cfg.clip_seconds, &opts);
                 });
                 divider(ui);
-                setting_row(ui, "Save hotkey", "Works everywhere, including in games", |ui| {
+                setting_row(ui, "Save hotkey", "Press again within 10 s to make the clip longer", |ui| {
                     let label = if self.capturing_hotkey { "Press a key combination…".to_string() } else { self.cfg.hotkey.label() };
                     let b = egui::Button::new(RichText::new(label).family(bold()).size(13.5).color(if self.capturing_hotkey {
                         Color32::BLACK
@@ -504,13 +535,13 @@ impl App {
                 let (mw, mh) = self.monitors.get(self.cfg.monitor as usize).map(|m| (m.1, m.2)).unwrap_or((1920, 1080));
                 let (ow, oh) = self.cfg.resolution.output_size(mw, mh);
                 let br = self.cfg.quality.bitrate(ow, oh, self.cfg.fps);
-                let ram = (br as f64 / 8.0 + 24_000.0) * (self.cfg.clip_seconds + 2) as f64;
+                let ram = (br as f64 / 8.0 + 24_000.0) * (self.cfg.clip_seconds + 12) as f64;
                 ui.add_space(4.0);
                 ui.label(
                     RichText::new(format!(
                         "{ow}×{oh} · ~{} Mbps · about {} per clip · uses ~{} of RAM · encoded on your GPU",
                         (br + 500_000) / 1_000_000,
-                        fmt_size((ram * self.cfg.clip_seconds as f64 / (self.cfg.clip_seconds + 2) as f64) as u64),
+                        fmt_size((ram * self.cfg.clip_seconds as f64 / (self.cfg.clip_seconds + 12) as f64) as u64),
                         fmt_size(ram as u64)
                     ))
                     .size(12.0)
@@ -531,21 +562,61 @@ impl App {
 
             section_title(ui, "Saving");
             card(ui, |ui| {
-                setting_row(ui, "Clips folder", &self.cfg.clips_dir.display().to_string(), |ui| {
-                    if button(ui, "Change…").clicked() {
+                setting_row(ui, "Clips folder", "Type a path or browse", |ui| {
+                    if button(ui, "Browse…").clicked() {
                         if let Some(p) = win::pick_folder(&self.cfg.clips_dir) {
+                            self.folder_edit = p.display().to_string();
                             self.cfg.clips_dir = p;
                             changed = true;
                             self.lib.scan(&self.cfg.clips_dir);
                         }
                     }
+                    let r = ui.add(
+                        egui::TextEdit::singleline(&mut self.folder_edit)
+                            .desired_width((ui.available_width() - 8.0).clamp(160.0, 320.0))
+                            .hint_text("E:\\videos"),
+                    );
+                    let commit = r.lost_focus() || (r.has_focus() && ui.input(|i| i.key_pressed(Key::Enter)));
+                    if commit {
+                        let p = PathBuf::from(self.folder_edit.trim());
+                        if p.as_os_str().is_empty() {
+                            self.folder_edit = self.cfg.clips_dir.display().to_string();
+                        } else if p != self.cfg.clips_dir {
+                            match std::fs::create_dir_all(&p) {
+                                Ok(()) => {
+                                    self.cfg.clips_dir = p;
+                                    changed = true;
+                                    self.lib.scan(&self.cfg.clips_dir);
+                                    self.toast("Clips folder updated");
+                                }
+                                Err(e) => {
+                                    self.toast(format!("Can't use that folder: {e}"));
+                                    self.folder_edit = self.cfg.clips_dir.display().to_string();
+                                }
+                            }
+                        }
+                    }
+                });
+                divider(ui);
+                setting_row(ui, "Sort into game folders", "Uses your existing folders, e.g. E:\\videos\\Valorant", |ui| {
+                    changed |= toggle(ui, &mut self.cfg.game_folders).changed();
+                });
+                if self.cfg.game_folders {
+                    divider(ui);
+                    setting_row(ui, "Create folders for new games", "Off: clips of unknown games go in the main folder", |ui| {
+                        changed |= toggle(ui, &mut self.cfg.new_game_folders).changed();
+                    });
+                }
+                divider(ui);
+                setting_row(ui, "Copy new clips automatically", "Every saved clip is ready to paste (Ctrl+V)", |ui| {
+                    changed |= toggle(ui, &mut self.cfg.copy_after_save).changed();
                 });
                 divider(ui);
                 setting_row(ui, "Sound when saved", "A short, quiet chirp", |ui| {
                     changed |= toggle(ui, &mut self.cfg.sound_on_save).changed();
                 });
                 divider(ui);
-                setting_row(ui, "Notification when saved", "Small Windows notification", |ui| {
+                setting_row(ui, "Notification when saved", "Errors are always shown", |ui| {
                     changed |= toggle(ui, &mut self.cfg.notify_on_save).changed();
                 });
             });
@@ -623,10 +694,35 @@ impl App {
     }
 }
 
+/// Rename / show in folder / delete, used by the "···" button and right-click.
+fn clip_menu(ui: &mut egui::Ui, path: &std::path::Path) -> Option<ClipAction> {
+    let mut act = None;
+    if ui.button("Play").clicked() {
+        act = Some(ClipAction::Play(path.to_path_buf()));
+    }
+    if ui.button("Copy").clicked() {
+        act = Some(ClipAction::Copy(path.to_path_buf()));
+    }
+    if ui.button("Rename").clicked() {
+        act = Some(ClipAction::StartRename(path.to_path_buf()));
+    }
+    if ui.button("Show in folder").clicked() {
+        act = Some(ClipAction::Reveal(path.to_path_buf()));
+    }
+    ui.separator();
+    if ui.button(RichText::new("Delete (to Recycle Bin)").color(RED)).clicked() {
+        act = Some(ClipAction::Delete(path.to_path_buf()));
+    }
+    if act.is_some() {
+        ui.close_menu();
+    }
+    act
+}
+
 enum ClipAction {
     Play(PathBuf),
+    Copy(PathBuf),
     Reveal(PathBuf),
-    AskDelete(PathBuf),
     Delete(PathBuf),
     StartRename(PathBuf),
     CommitRename,
