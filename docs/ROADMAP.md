@@ -10,7 +10,7 @@ Per-version details are in [CHANGELOG.md](../CHANGELOG.md). Downloads are on the
 | --- | --- |
 | Latest release | **v0.3.2** (2026-11-26) |
 | Builds | Every push is built and tested on Windows by GitHub Actions ([build](https://github.com/Tsumikaze/ezclip/actions/workflows/build.yml)); a new version number publishes a release automatically |
-| Tested on real Windows | **Started.** Saving into game folders and Copy → Discord work; first bugs fixed in v0.3.1. Checklist: [#1](https://github.com/Tsumikaze/ezclip/issues/1) |
+| Tested on real Windows | **Yes.** Confirmed working with v0.3.2 on the developer's PC (i7-12700K, RX 9070 XT, Windows 10). Checklist: [#1](https://github.com/Tsumikaze/ezclip/issues/1) (closed) |
 
 ### How it has been verified so far
 Development happens in a Linux cloud environment, cross-compiling for Windows:
@@ -23,9 +23,9 @@ Development happens in a Linux cloud environment, cross-compiling for Windows:
   renamed clips, other recorders' files).
 - **UI:** rendered and inspected as screenshots.
 
-What can't be checked without a real PC: screen capture, the GPU encoder, audio
-capture, the hotkey and tray icon, game detection, the trim preview, and Shrink for
-Discord. That's checklist [#1](https://github.com/Tsumikaze/ezclip/issues/1).
+Everything that needs a real PC (capture, GPU encoder, audio, hotkey, tray, game
+detection, Copy to Discord) was then confirmed on Windows in
+[#1](https://github.com/Tsumikaze/ezclip/issues/1).
 
 ## Done
 
@@ -54,7 +54,7 @@ Discord. That's checklist [#1](https://github.com/Tsumikaze/ezclip/issues/1).
 - [x] Replay buffer in the tray, hotkey save, GPU (hardware) H.264 encoding, system audio + mic
 - [x] Starts with Windows; black, minimal window with clips library and settings
 
-## Next: v0.4.0 (planned 2026-11-27)
+## Next: v0.4.0 (planned 2026-11-27, 9:00 CET)
 - [ ] AV1 / HEVC encoding option: [#2](https://github.com/Tsumikaze/ezclip/issues/2)
 - [ ] Hover a thumbnail to preview the clip: [#3](https://github.com/Tsumikaze/ezclip/issues/3)
 - [ ] Save sound: volume and choice of sounds: [#4](https://github.com/Tsumikaze/ezclip/issues/4)
