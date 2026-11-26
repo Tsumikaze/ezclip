@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.1
+
+Fixes from the first real-hardware test ([#1](https://github.com/Tsumikaze/ezclip/issues/1)):
+
+- **Fixed: "Show in folder" opened Documents** instead of the clip's folder, for clip
+  paths containing spaces. It now asks Windows directly to open the folder with the
+  clip selected.
+- **Copy now fits Discord:** if a clip is over your upload limit (Settings →
+  Sharing, default 10 MB), Copy shrinks it first and copies the small version when
+  it's ready. An up-to-date small version is reused instantly next time. The
+  full-size file is still available under ··· → *Copy original file*. This can be
+  switched off in Settings → Sharing.
+- **Easier to find favourites:** the ☆ next to *Play* is brighter. Click it to
+  favourite a clip (it turns gold), or use ··· → *Add to favourites*.
+- **Version shown** next to the logo and in Settings → General, with a link to the releases.
+
 ## 0.3.0
 
 - **Trim clips** (··· menu → *Trim…*): a preview and a timeline with start/end

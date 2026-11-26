@@ -8,9 +8,9 @@ Per-version details are in [CHANGELOG.md](../CHANGELOG.md). Downloads are on the
 
 | | |
 | --- | --- |
-| Latest release | **v0.3.0** (2026-11-26) |
+| Latest release | **v0.3.1** (2026-11-26) |
 | Builds | Every push is built and tested on Windows by GitHub Actions ([build](https://github.com/Tsumikaze/ezclip/actions/workflows/build.yml)); a new version number publishes a release automatically |
-| Tested on real Windows | **Not yet.** See [#1](https://github.com/Tsumikaze/ezclip/issues/1) |
+| Tested on real Windows | **Started.** Saving into game folders and Copy → Discord work; first bugs fixed in v0.3.1. Checklist: [#1](https://github.com/Tsumikaze/ezclip/issues/1) |
 
 ### How it has been verified so far
 Development happens in a Linux cloud environment, cross-compiling for Windows:
@@ -28,6 +28,11 @@ capture, the hotkey and tray icon, game detection, the trim preview, and Shrink 
 Discord. That's checklist [#1](https://github.com/Tsumikaze/ezclip/issues/1).
 
 ## Done
+
+### v0.3.1
+- [x] Fix: "Show in folder" opened Documents for paths with spaces
+- [x] Copy shrinks clips over the Discord limit first (reuses an existing small copy)
+- [x] Brighter favourite star; version shown in the window
 
 ### v0.3.0
 - [x] Lossless, instant trim editor

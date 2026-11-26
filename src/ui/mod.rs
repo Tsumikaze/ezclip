@@ -79,6 +79,8 @@ struct App {
     trim_rx: Receiver<TrimResult>,
     // shrink for Discord: path -> progress
     shrinking: HashMap<PathBuf, f32>,
+    /// Shrinks started by the Copy button: copy the result when done.
+    copy_when_shrunk: std::collections::HashSet<PathBuf>,
     shrink_tx: Sender<ShrinkUpdate>,
     shrink_rx: Receiver<ShrinkUpdate>,
     cleanup_preview: Option<(String, bool)>,
@@ -131,6 +133,7 @@ impl App {
             trim_tx,
             trim_rx,
             shrinking: HashMap::new(),
+            copy_when_shrunk: Default::default(),
             shrink_tx,
             shrink_rx,
             cleanup_preview: None,
@@ -189,6 +192,7 @@ impl App {
             ui.add(egui::Image::new(&self.logo).fit_to_exact_size(Vec2::splat(26.0)));
             ui.add_space(2.0);
             ui.label(RichText::new("ezclip").size(20.0).family(bold()).color(TEXT));
+            ui.label(RichText::new(concat!("v", env!("CARGO_PKG_VERSION"))).size(11.5).color(TEXT_FAINT));
         });
         ui.add_space(26.0);
 
@@ -521,7 +525,7 @@ impl App {
                     ui.memory_mut(|m| m.toggle_popup(ui.make_persistent_id(("more", &path))));
                 }
             }
-            if button(ui, "Copy").on_hover_text("Copy to paste into Discord, a browser or Explorer").clicked() {
+            if button(ui, "Copy").on_hover_text(format!("Copy to paste into Discord. Clips over {limit} MB are shrunk to fit first")).clicked() {
                 act = Some(ClipAction::Copy(path.clone()));
             }
             if button(ui, "Play").clicked() {
@@ -550,6 +554,42 @@ impl App {
         act
     }
 
+    /// Copy a clip so it can be pasted into Discord. If it is over the upload
+    /// limit, shrink it first (or reuse an up-to-date "(discord)" copy) and
+    /// copy the small version when it's ready.
+    fn copy_for_discord(&mut self, p: PathBuf) {
+        let limit_mb = self.cfg.discord_limit_mb;
+        let limit = limit_mb as u64 * 1_000_000;
+        let meta = std::fs::metadata(&p);
+        let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+        if !self.cfg.copy_fits_discord || size <= limit {
+            if win::copy_files_to_clipboard(&[&p]) {
+                self.toast("Copied — paste it into Discord with Ctrl+V");
+            } else {
+                self.toast("Couldn't access the clipboard — try again");
+            }
+            return;
+        }
+        let stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        let small = p.with_file_name(format!("{stem} (discord).mp4"));
+        if let (Ok(ms), Ok(mo)) = (std::fs::metadata(&small), meta) {
+            let fresh = match (ms.modified(), mo.modified()) {
+                (Ok(a), Ok(b)) => a >= b,
+                _ => false,
+            };
+            if fresh && ms.len() <= limit && win::copy_files_to_clipboard(&[&small]) {
+                self.toast(format!("Copied the Discord-sized version ({}) — paste with Ctrl+V", fmt_size(ms.len())));
+                return;
+            }
+        }
+        self.copy_when_shrunk.insert(p.clone());
+        if !self.shrinking.contains_key(&p) {
+            self.shrinking.insert(p.clone(), 0.0);
+            media::shrink(p, limit_mb, self.shrink_tx.clone(), self.ctx.clone());
+        }
+        self.toast(format!("{} is over {limit_mb} MB — shrinking it first, it'll be copied when ready", fmt_size(size)));
+    }
+
     fn do_action(&mut self, a: ClipAction) {
         match a {
             ClipAction::Trim(p) => {
@@ -576,9 +616,10 @@ impl App {
             }
             ClipAction::Play(p) => win::open_path(&p),
             ClipAction::Reveal(p) => win::show_in_folder(&p),
-            ClipAction::Copy(p) => {
+            ClipAction::Copy(p) => self.copy_for_discord(p),
+            ClipAction::CopyOriginal(p) => {
                 if win::copy_files_to_clipboard(&[&p]) {
-                    self.toast("Copied — paste it into Discord with Ctrl+V");
+                    self.toast("Original copied — paste it with Ctrl+V");
                 } else {
                     self.toast("Couldn't access the clipboard — try again");
                 }
@@ -772,7 +813,7 @@ impl App {
                     });
                 }
                 divider(ui);
-                setting_row(ui, "Copy new clips automatically", "Every saved clip is ready to paste (Ctrl+V)", |ui| {
+                setting_row(ui, "Copy new clips automatically", "Copies the full-size file after each save", |ui| {
                     changed |= toggle(ui, &mut self.cfg.copy_after_save).changed();
                 });
                 divider(ui);
@@ -792,12 +833,16 @@ impl App {
                     changed |= chips(ui, &mut self.cfg.discord_limit_mb, &opts);
                 });
                 divider(ui);
+                setting_row(ui, "Copy fits Discord", "Copy shrinks clips over the limit first", |ui| {
+                    changed |= toggle(ui, &mut self.cfg.copy_fits_discord).changed();
+                });
+                divider(ui);
                 setting_row(ui, "Copy after shrinking", "Ready to paste into Discord", |ui| {
                     changed |= toggle(ui, &mut self.cfg.copy_after_shrink).changed();
                 });
                 ui.add_space(2.0);
                 ui.label(
-                    RichText::new("Shrink a clip from its ··· menu (or right-click). The small copy is saved next to it as \"<name> (discord).mp4\".")
+                    RichText::new("The small version is saved next to the clip as \"<name> (discord).mp4\" and reused next time. Shrink by hand from a clip's ··· menu.")
                         .size(12.0)
                         .color(TEXT_FAINT),
                 );
@@ -868,6 +913,12 @@ impl App {
                     },
                 );
                 divider(ui);
+                setting_row(ui, "Version", concat!("ezclip ", env!("CARGO_PKG_VERSION")), |ui| {
+                    if button(ui, "Releases").clicked() {
+                        win::open_url("https://github.com/Tsumikaze/ezclip/releases");
+                    }
+                });
+                divider(ui);
                 setting_row(ui, "Logs", "For troubleshooting", |ui| {
                     if button(ui, "Open").clicked() {
                         win::open_path(&crate::config::app_dir());
@@ -934,10 +985,11 @@ impl App {
                 }
                 ShrinkUpdate::Done(p, r) => {
                     self.shrinking.remove(&p);
+                    let want_copy = self.copy_when_shrunk.remove(&p) || self.cfg.copy_after_shrink;
                     match r {
                         Ok(out) => {
                             let size = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
-                            let copied = self.cfg.copy_after_shrink && win::copy_files_to_clipboard(&[&out]);
+                            let copied = want_copy && win::copy_files_to_clipboard(&[&out]);
                             let what = if out == p {
                                 format!("Already under {} MB", self.cfg.discord_limit_mb)
                             } else {
@@ -989,8 +1041,11 @@ fn clip_menu(ui: &mut egui::Ui, path: &std::path::Path, favorite: bool, limit_mb
     if ui.button("Play").clicked() {
         act = Some(ClipAction::Play(p()));
     }
-    if ui.button("Copy").clicked() {
+    if ui.button("Copy for Discord").clicked() {
         act = Some(ClipAction::Copy(p()));
+    }
+    if ui.button("Copy original file").clicked() {
+        act = Some(ClipAction::CopyOriginal(p()));
     }
     if ui.button("Trim…").clicked() {
         act = Some(ClipAction::Trim(p()));
@@ -1028,7 +1083,7 @@ fn star_button(ui: &mut egui::Ui, on: bool) -> egui::Response {
         pts.push(c + Vec2::new(a.cos() * r, a.sin() * r));
     }
     let hover = resp.hovered();
-    let color = if on { Color32::from_rgb(255, 204, 64) } else if hover { TEXT } else { TEXT_FAINT };
+    let color = if on { Color32::from_rgb(255, 204, 64) } else if hover { TEXT } else { TEXT_DIM };
     // Fill as triangles from the centre (the star isn't convex).
     let painter = ui.painter();
     for k in 0..10 {
@@ -1037,7 +1092,7 @@ fn star_button(ui: &mut egui::Ui, on: bool) -> egui::Response {
         if on {
             painter.add(egui::Shape::convex_polygon(vec![c, a, b], color, egui::Stroke::NONE));
         } else {
-            painter.line_segment([a, b], egui::Stroke::new(1.4_f32, color));
+            painter.line_segment([a, b], egui::Stroke::new(1.7_f32, color));
         }
     }
     resp.on_hover_text(if on { "Favourite: never auto-deleted" } else { "Add to favourites" })
@@ -1050,6 +1105,7 @@ enum ClipAction {
     Favorite(PathBuf, bool),
     Play(PathBuf),
     Copy(PathBuf),
+    CopyOriginal(PathBuf),
     Reveal(PathBuf),
     Delete(PathBuf),
     StartRename(PathBuf),

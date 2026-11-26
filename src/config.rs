@@ -174,6 +174,8 @@ pub struct Config {
     /// Target size for "Shrink for Discord".
     pub discord_limit_mb: u32,
     pub copy_after_shrink: bool,
+    /// The Copy button shrinks clips that are over the Discord limit first.
+    pub copy_fits_discord: bool,
 }
 
 impl Default for Config {
@@ -199,6 +201,7 @@ impl Default for Config {
             cleanup_recycle: true,
             discord_limit_mb: 10,
             copy_after_shrink: true,
+            copy_fits_discord: true,
         }
     }
 }

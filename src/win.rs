@@ -110,8 +110,32 @@ pub fn open_path(p: &Path) {
     }
 }
 
+pub fn open_url(url: &str) {
+    unsafe {
+        ShellExecuteW(HWND::default(), w!("open"), &HSTRING::from(url), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL);
+    }
+}
+
+/// Open the clip's folder in Explorer with the clip selected.
 pub fn show_in_folder(p: &Path) {
-    let _ = std::process::Command::new("explorer.exe").arg(format!("/select,{}", p.display())).spawn();
+    // Ask the shell directly. (Passing "/select,<path>" to explorer.exe breaks
+    // on paths with spaces: Rust quotes the whole argument, Explorer can't parse
+    // it and opens Documents instead.)
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let pidl = ILCreateFromPathW(&HSTRING::from(p.as_os_str()));
+        if !pidl.is_null() {
+            let ok = SHOpenFolderAndSelectItems(pidl, None, 0).is_ok();
+            ILFree(Some(pidl));
+            if ok {
+                return;
+            }
+        }
+    }
+    // Fallback: build the command line ourselves so the path is quoted
+    // the way Explorer expects: /select,"E:\videos\Valorant\clip.mp4"
+    use std::os::windows::process::CommandExt;
+    let _ = std::process::Command::new("explorer.exe").raw_arg(format!("/select,\"{}\"", p.display())).spawn();
 }
 
 /// Move a file to the recycle bin (so a mis-click is recoverable).
