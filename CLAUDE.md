@@ -33,6 +33,8 @@ CI publishes a GitHub release `v<version>` whenever `Cargo.toml`'s `version` has
 
 Do not push git tags: tag pushes are blocked from cloud sessions, and CI creates the tag itself.
 
+Progress is tracked on GitHub. `docs/ROADMAP.md` holds status, done/next lists, verification notes and known limitations. Planned features and the real-hardware test checklist are GitHub issues. When a version ships, update the roadmap and close its issues with a comment.
+
 ## Architecture
 
 ### Two processes, one exe (`src/main.rs`)

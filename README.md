@@ -1,5 +1,12 @@
 # ezclip
 
+[![build](https://github.com/Tsumikaze/ezclip/actions/workflows/build.yml/badge.svg)](https://github.com/Tsumikaze/ezclip/actions/workflows/build.yml)
+[![release](https://img.shields.io/github/v/release/Tsumikaze/ezclip)](https://github.com/Tsumikaze/ezclip/releases/latest)
+
+**Download:** [latest release](https://github.com/Tsumikaze/ezclip/releases/latest) ·
+**Status & roadmap:** [docs/ROADMAP.md](docs/ROADMAP.md) ·
+**Changes:** [CHANGELOG.md](CHANGELOG.md)
+
 Fast, simple clipping for Windows. ezclip quietly keeps the last few seconds of
 your screen **and audio** in memory. Press a hotkey and they're saved as an MP4.
 
@@ -14,7 +21,7 @@ your screen **and audio** in memory. Press a hotkey and they're saved as an MP4.
 
 ## Install
 
-1. Download `ezclip.exe` (from the GitHub Actions **build** artifact or a release)
+1. Download `ezclip.exe` from the [latest release](https://github.com/Tsumikaze/ezclip/releases/latest)
    and put it somewhere permanent, e.g. `C:\Program Files\ezclip\ezclip.exe`.
 2. Double-click it. The window opens and a ◉ icon appears in the tray.
    That's it: the replay buffer is now running.
