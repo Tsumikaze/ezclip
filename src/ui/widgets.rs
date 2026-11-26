@@ -25,6 +25,17 @@ pub fn chips<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options: &[(T, Str
     changed
 }
 
+/// A single on/off pill (e.g. the Favourites filter).
+pub fn chip_toggle(ui: &mut Ui, label: &str, on: bool) -> Response {
+    let (fill, text) = if on { (ACCENT, Color32::BLACK) } else { (CONTROL, TEXT_DIM) };
+    let btn = egui::Button::new(RichText::new(label).color(text).family(bold()).size(13.0))
+        .fill(fill)
+        .stroke(if on { Stroke::NONE } else { Stroke::new(1.0_f32, BORDER) })
+        .rounding(egui::Rounding::same(15.0))
+        .min_size(Vec2::new(52.0, 30.0));
+    ui.add(btn).on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
 /// iOS-style switch.
 pub fn toggle(ui: &mut Ui, on: &mut bool) -> Response {
     let size = Vec2::new(42.0, 24.0);

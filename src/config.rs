@@ -163,6 +163,17 @@ pub struct Config {
     pub copy_after_save: bool,
     pub sound_on_save: bool,
     pub notify_on_save: bool,
+    /// Auto-cleanup of old ezclip clips (favourites are kept).
+    pub cleanup_enabled: bool,
+    /// 0 = no size limit.
+    pub cleanup_max_gb: u32,
+    /// 0 = no age limit.
+    pub cleanup_max_days: u32,
+    /// Move to the Recycle Bin instead of deleting permanently.
+    pub cleanup_recycle: bool,
+    /// Target size for "Shrink for Discord".
+    pub discord_limit_mb: u32,
+    pub copy_after_shrink: bool,
 }
 
 impl Default for Config {
@@ -182,6 +193,12 @@ impl Default for Config {
             copy_after_save: false,
             sound_on_save: true,
             notify_on_save: false,
+            cleanup_enabled: false,
+            cleanup_max_gb: 100,
+            cleanup_max_days: 0,
+            cleanup_recycle: true,
+            discord_limit_mb: 10,
+            copy_after_shrink: true,
         }
     }
 }

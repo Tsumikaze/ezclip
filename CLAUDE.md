@@ -19,9 +19,9 @@ cargo build --release --target x86_64-pc-windows-gnu   # -> target/x86_64-pc-win
 
 On Windows, `cargo build --release` and `cargo test --release` work directly. A single test runs with `cargo test --release trims_to_window_on_keyframes`.
 
-Unit tests live in `src/recorder/buffer.rs` and `src/game_match.rs`. Neither file uses Windows APIs, but they sit in a Windows-only crate, so on Linux:
+Unit tests live in `src/recorder/buffer.rs`, `src/game_match.rs` and `src/clipmeta.rs`. These files, plus `src/clipfile.rs` and `src/cleanup.rs`, use no Windows APIs, but they sit in a Windows-only crate, so on Linux:
 - `cargo test --target x86_64-pc-windows-gnu --no-run` only checks that the tests compile.
-- To run them, include those files with `#[path]` in a scratch crate.
+- To run them, include those files with `#[path]` in a scratch crate, with tiny stubs for `crate::win` / `crate::log` where needed.
 
 The same `#[path]` approach can also test `recorder/mux.rs` against real H.264/AAC streams made with ffmpeg, checking the result with ffprobe. CI (`.github/workflows/build.yml`, `windows-latest`) runs `cargo test --release` and the MSVC build on every push.
 
@@ -71,8 +71,15 @@ Do not push git tags: tag pushes are blocked from cloud sessions, and CI creates
   - `game_match.rs` (pure logic) fuzzy-matches those names against the clips folder's subfolders.
   - When saving from the tray or the ezclip window, it uses the remembered game.
 
+### Clip files (shared by both processes)
+- `clipfile.rs`: lossless trim of H.264/AAC MP4s through the `mp4` crate. Sample times come from the `stts`/`stss` tables (`track.trak`). The start snaps back to a keyframe. Trimming in place drops the reader before replacing the file.
+- `clipmeta.rs`: two per-clip flags stored as NTFS alternate data streams (`clip.mp4:ezclip.favorite`, `clip.mp4:ezclip.clip`), so they survive renames in Explorer. Favourites fall back to `%APPDATA%\ezclip\favorites.json` on drives without streams. "Made by ezclip" falls back to the `<name> YYYY-MM-DD HH-MM-SS.mp4` file name pattern.
+- `cleanup.rs`: `plan()` is a dry run, also used for the Settings preview; `run()` applies it. It only touches clips `clipmeta::is_ezclip` accepts (the user's clips folder also holds other recorders' videos) and never favourites. The recorder runs it on its saver thread at startup, after each save and on reload.
+
 ### UI (`src/ui/`)
 - `clips.rs`: scans the clips folder and one level of game subfolders. Thumbnails come from the Windows shell (`IShellItemImageFactory`) on a worker thread, and durations from the `mp4` crate.
+- `media.rs`: Media Foundation in the window process. `FrameGrabber` is a worker that decodes single frames (source reader → RGB32) for the trim preview and keeps only the newest request. `shrink` is "Shrink for Discord": source reader (advanced video processing: scale + NV12) → sink writer (hardware H.264 + AAC). It picks resolution and fps from the bitrate budget and retries with a lower bitrate if the file comes out too big.
+- `editor.rs`: the trim view (`Page::Editor`). Trim and shrink jobs run on threads and report back over channels drained in `App::pump_jobs`.
 - `theme.rs` / `widgets.rs`: the black theme loads Segoe UI from `C:\Windows\Fonts` when available. It provides custom chips, a toggle, cards and `setting_row`.
 
 egui layout pitfalls already hit here:

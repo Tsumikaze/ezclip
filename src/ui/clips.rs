@@ -17,6 +17,7 @@ pub struct Clip {
     pub name: String,
     /// Game folder the clip lives in (None = directly in the clips folder).
     pub game: Option<String>,
+    pub favorite: bool,
     pub modified: SystemTime,
     pub size: u64,
     pub duration: Option<f64>,
@@ -90,6 +91,7 @@ impl Library {
                     _ => self.clips.push(Clip {
                         name: path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(),
                         game: game.clone(),
+                        favorite: crate::clipmeta::is_favorite(&path),
                         path,
                         modified,
                         size,
@@ -101,6 +103,14 @@ impl Library {
             }
         }
         self.clips.sort_by(|a, b| b.modified.cmp(&a.modified));
+    }
+
+    /// Game folder names that have clips, sorted.
+    pub fn games(&self) -> Vec<String> {
+        let mut g: Vec<String> = self.clips.iter().filter_map(|c| c.game.clone()).collect();
+        g.sort_by_key(|s| s.to_lowercase());
+        g.dedup();
+        g
     }
 
     /// Ask the worker for thumbnails we don't have yet; receive finished ones.

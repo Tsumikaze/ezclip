@@ -1,12 +1,18 @@
 //! The ezclip window: a Clips library and a Settings page.
 //! Runs as its own short-lived process, so it costs nothing when closed.
 mod clips;
+mod editor;
+mod media;
 mod theme;
 mod widgets;
 
 use crate::config::{vk_name, Config, Hotkey, Quality, Resolution, Status};
 use crate::win;
 use clips::Library;
+use editor::{Editor, EditorAction};
+use media::{FrameGrabber, ShrinkUpdate};
+use std::collections::HashMap;
+use std::sync::mpsc::{channel, Receiver, Sender};
 use eframe::egui::{self, Align, Color32, Key, Layout, RichText, Sense, Vec2};
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
@@ -17,7 +23,32 @@ use widgets::*;
 enum Page {
     Clips,
     Settings,
+    Editor,
 }
+
+#[derive(PartialEq, Clone, Copy)]
+enum Sort {
+    Newest,
+    Oldest,
+    Largest,
+    Longest,
+    Name,
+}
+
+impl Sort {
+    const ALL: [Sort; 5] = [Sort::Newest, Sort::Oldest, Sort::Largest, Sort::Longest, Sort::Name];
+    fn label(self) -> &'static str {
+        match self {
+            Sort::Newest => "Newest first",
+            Sort::Oldest => "Oldest first",
+            Sort::Largest => "Largest first",
+            Sort::Longest => "Longest first",
+            Sort::Name => "Name (A–Z)",
+        }
+    }
+}
+
+type TrimResult = Result<(PathBuf, bool), String>;
 
 struct App {
     cfg: Config,
@@ -35,6 +66,22 @@ struct App {
     folder_edit: String,
     toast: Option<(String, Instant)>,
     logo: egui::TextureHandle,
+    ctx: egui::Context,
+    // clips list filters
+    search: String,
+    game_filter: Option<String>,
+    sort: Sort,
+    favorites_only: bool,
+    // trim editor
+    editor: Option<Editor>,
+    grabber: Option<FrameGrabber>,
+    trim_tx: Sender<TrimResult>,
+    trim_rx: Receiver<TrimResult>,
+    // shrink for Discord: path -> progress
+    shrinking: HashMap<PathBuf, f32>,
+    shrink_tx: Sender<ShrinkUpdate>,
+    shrink_rx: Receiver<ShrinkUpdate>,
+    cleanup_preview: Option<(String, bool)>,
 }
 
 pub fn run() -> Result<(), String> {
@@ -71,7 +118,22 @@ impl App {
             .map(|(i, m)| (crate::display::label(i, m), m.width, m.height))
             .collect();
         let folder_edit = cfg.clips_dir.display().to_string();
+        let (trim_tx, trim_rx) = channel();
+        let (shrink_tx, shrink_rx) = channel();
         let mut app = Self {
+            ctx: cc.egui_ctx.clone(),
+            search: String::new(),
+            game_filter: None,
+            sort: Sort::Newest,
+            favorites_only: false,
+            editor: None,
+            grabber: None,
+            trim_tx,
+            trim_rx,
+            shrinking: HashMap::new(),
+            shrink_tx,
+            shrink_rx,
+            cleanup_preview: None,
             cfg,
             page: Page::Clips,
             lib,
@@ -135,9 +197,12 @@ impl App {
             (Page::Clips, "Clips", if count > 0 { count.to_string() } else { String::new() }),
             (Page::Settings, "Settings", String::new()),
         ] {
-            if self.nav_item(ui, label, &badge, self.page == page).clicked() {
+            let active = self.page == page || (page == Page::Clips && self.page == Page::Editor);
+            if self.nav_item(ui, label, &badge, active).clicked() {
                 self.page = page;
                 self.capturing_hotkey = false;
+                self.editor = None;
+                self.cleanup_preview = None;
             }
         }
     }
@@ -220,6 +285,35 @@ impl App {
 
     // -------------------------------------------------------------- clips --
 
+    /// Indices of clips passing the search / game / favourites filters, sorted.
+    fn visible_clips(&self) -> Vec<usize> {
+        let words: Vec<String> = self.search.split_whitespace().map(|w| w.to_lowercase()).collect();
+        let mut v: Vec<usize> = (0..self.lib.clips.len())
+            .filter(|&i| {
+                let c = &self.lib.clips[i];
+                if self.favorites_only && !c.favorite {
+                    return false;
+                }
+                if let Some(g) = &self.game_filter {
+                    if c.game.as_deref() != Some(g.as_str()) {
+                        return false;
+                    }
+                }
+                let hay = format!("{} {}", c.name, c.game.as_deref().unwrap_or("")).to_lowercase();
+                words.iter().all(|w| hay.contains(w.as_str()))
+            })
+            .collect();
+        let clips = &self.lib.clips;
+        match self.sort {
+            Sort::Newest => v.sort_by(|&a, &b| clips[b].modified.cmp(&clips[a].modified)),
+            Sort::Oldest => v.sort_by(|&a, &b| clips[a].modified.cmp(&clips[b].modified)),
+            Sort::Largest => v.sort_by(|&a, &b| clips[b].size.cmp(&clips[a].size)),
+            Sort::Longest => v.sort_by(|&a, &b| clips[b].duration.unwrap_or(0.0).total_cmp(&clips[a].duration.unwrap_or(0.0))),
+            Sort::Name => v.sort_by_key(|&i| clips[i].name.to_lowercase()),
+        }
+        v
+    }
+
     fn clips_page(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.heading("Clips");
@@ -231,18 +325,14 @@ impl App {
             });
         });
         let n = self.lib.clips.len();
+        let visible = self.visible_clips();
+        let shown = if visible.len() == n { format!("{n} clip{}", if n == 1 { "" } else { "s" }) } else { format!("{} of {n} clips", visible.len()) };
         ui.label(
-            RichText::new(format!(
-                "{} clip{} · {} · {}",
-                n,
-                if n == 1 { "" } else { "s" },
-                fmt_size(self.lib.total_size()),
-                self.cfg.clips_dir.display()
-            ))
-            .size(12.5)
-            .color(TEXT_FAINT),
+            RichText::new(format!("{shown} · {} · {}", fmt_size(self.lib.total_size()), self.cfg.clips_dir.display()))
+                .size(12.5)
+                .color(TEXT_FAINT),
         );
-        ui.add_space(14.0);
+        ui.add_space(10.0);
 
         if n == 0 {
             ui.add_space(ui.available_height() * 0.25);
@@ -261,15 +351,56 @@ impl App {
             return;
         }
 
+        // Toolbar: search, game, sort, favourites.
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            ui.add(
+                egui::TextEdit::singleline(&mut self.search)
+                    .hint_text("Search clips")
+                    .desired_width(200.0)
+                    .min_size(Vec2::new(0.0, 30.0))
+                    .vertical_align(Align::Center),
+            );
+            let games = self.lib.games();
+            let game_label = self.game_filter.clone().unwrap_or_else(|| "All games".into());
+            egui::ComboBox::from_id_salt("game_filter").selected_text(game_label).width(170.0).show_ui(ui, |ui| {
+                ui.selectable_value(&mut self.game_filter, None, "All games");
+                for g in games {
+                    ui.selectable_value(&mut self.game_filter, Some(g.clone()), g);
+                }
+            });
+            egui::ComboBox::from_id_salt("sort").selected_text(self.sort.label()).width(140.0).show_ui(ui, |ui| {
+                for s in Sort::ALL {
+                    ui.selectable_value(&mut self.sort, s, s.label());
+                }
+            });
+            if chip_toggle(ui, "Favourites", self.favorites_only).clicked() {
+                self.favorites_only = !self.favorites_only;
+            }
+        });
+        ui.add_space(10.0);
+
+        if visible.is_empty() {
+            ui.add_space(30.0);
+            ui.vertical_centered(|ui| {
+                ui.label(RichText::new("No clips match").size(16.0).family(bold()));
+                if button(ui, "Clear filters").clicked() {
+                    self.search.clear();
+                    self.game_filter = None;
+                    self.favorites_only = false;
+                }
+            });
+            return;
+        }
+
         let mut action: Option<ClipAction> = None;
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, 114.0, visible.len(), |ui, range| {
             ui.spacing_mut().item_spacing.y = 8.0;
-            for i in 0..self.lib.clips.len() {
+            for &i in &visible[range] {
                 if let Some(a) = self.clip_row(ui, i) {
                     action = Some(a);
                 }
             }
-            ui.add_space(8.0);
         });
         if let Some(a) = action {
             self.do_action(a);
@@ -336,7 +467,7 @@ impl App {
         // Title + meta
         let renaming_this = self.renaming.as_ref().is_some_and(|(p, _)| *p == path);
         ui.vertical(|ui| {
-            ui.set_width((ui.available_width() - 200.0).max(120.0));
+            ui.set_width((ui.available_width() - 250.0).max(120.0));
             ui.add_space(18.0);
             if renaming_this {
                 let (_, buf) = self.renaming.as_mut().unwrap();
@@ -357,6 +488,9 @@ impl App {
             ui.add(egui::Label::new(RichText::new(meta).size(12.5).color(TEXT_DIM)).truncate());
         });
 
+        let favorite = c.favorite;
+        let shrink_progress = self.shrinking.get(&path).copied();
+        let limit = self.cfg.discord_limit_mb;
         // Actions (right side): the two common ones visible, the rest in a menu.
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.add_space(6.0);
@@ -378,7 +512,7 @@ impl App {
                     egui::PopupCloseBehavior::CloseOnClick,
                     |ui| {
                         ui.set_min_width(170.0);
-                        if let Some(a) = clip_menu(ui, &path) {
+                        if let Some(a) = clip_menu(ui, &path, favorite, limit) {
                             act = Some(a);
                         }
                     },
@@ -393,12 +527,19 @@ impl App {
             if button(ui, "Play").clicked() {
                 act = Some(ClipAction::Play(path.clone()));
             }
+            if star_button(ui, favorite).clicked() {
+                act = Some(ClipAction::Favorite(path.clone(), !favorite));
+            }
+            if let Some(p) = shrink_progress {
+                ui.add(egui::ProgressBar::new(p).desired_width(90.0).desired_height(6.0));
+                ui.label(RichText::new("Shrinking").size(12.0).color(TEXT_DIM));
+            }
         });
 
         // Right-click anywhere on the row: same menu.
         row_resp.context_menu(|ui| {
             ui.set_min_width(170.0);
-            if let Some(a) = clip_menu(ui, &path) {
+            if let Some(a) = clip_menu(ui, &path, favorite, limit) {
                 act = Some(a);
             }
         });
@@ -411,6 +552,28 @@ impl App {
 
     fn do_action(&mut self, a: ClipAction) {
         match a {
+            ClipAction::Trim(p) => {
+                let grabber = self.grabber.get_or_insert_with(|| FrameGrabber::new(self.ctx.clone()));
+                self.editor = Some(Editor::open(p, grabber));
+                self.page = Page::Editor;
+            }
+            ClipAction::Shrink(p) => {
+                if !self.shrinking.contains_key(&p) {
+                    self.shrinking.insert(p.clone(), 0.0);
+                    media::shrink(p, self.cfg.discord_limit_mb, self.shrink_tx.clone(), self.ctx.clone());
+                    self.toast(format!("Shrinking to under {} MB…", self.cfg.discord_limit_mb));
+                }
+            }
+            ClipAction::Favorite(p, on) => {
+                if crate::clipmeta::set_favorite(&p, on) {
+                    if let Some(c) = self.lib.clips.iter_mut().find(|c| c.path == p) {
+                        c.favorite = on;
+                    }
+                    self.cleanup_preview = None;
+                } else {
+                    self.toast("Couldn't change the favourite");
+                }
+            }
             ClipAction::Play(p) => win::open_path(&p),
             ClipAction::Reveal(p) => win::show_in_folder(&p),
             ClipAction::Copy(p) => {
@@ -450,8 +613,9 @@ impl App {
                             self.renaming = Some((p, name));
                             return;
                         }
-                        if let Err(e) = std::fs::rename(&p, &target) {
-                            self.toast(format!("Couldn't rename: {e}"));
+                        match std::fs::rename(&p, &target) {
+                            Ok(()) => crate::clipmeta::renamed(&p, &target),
+                            Err(e) => self.toast(format!("Couldn't rename: {e}")),
                         }
                     }
                     self.lib.scan(&self.cfg.clips_dir);
@@ -621,6 +785,59 @@ impl App {
                 });
             });
 
+            section_title(ui, "Sharing");
+            card(ui, |ui| {
+                setting_row(ui, "Discord upload limit", "Free 10 MB · Nitro Basic 50 MB · Nitro 500 MB", |ui| {
+                    let opts: Vec<(u32, String)> = [500, 50, 10].iter().map(|&m| (m, format!("{m} MB"))).collect();
+                    changed |= chips(ui, &mut self.cfg.discord_limit_mb, &opts);
+                });
+                divider(ui);
+                setting_row(ui, "Copy after shrinking", "Ready to paste into Discord", |ui| {
+                    changed |= toggle(ui, &mut self.cfg.copy_after_shrink).changed();
+                });
+                ui.add_space(2.0);
+                ui.label(
+                    RichText::new("Shrink a clip from its ··· menu (or right-click). The small copy is saved next to it as \"<name> (discord).mp4\".")
+                        .size(12.0)
+                        .color(TEXT_FAINT),
+                );
+            });
+
+            section_title(ui, "Cleanup");
+            let before = (self.cfg.cleanup_enabled, self.cfg.cleanup_max_gb, self.cfg.cleanup_max_days, self.cfg.clips_dir.clone());
+            card(ui, |ui| {
+                setting_row(ui, "Auto-delete old clips", "Only ezclip's clips. Favourites are kept", |ui| {
+                    changed |= toggle(ui, &mut self.cfg.cleanup_enabled).changed();
+                });
+                divider(ui);
+                setting_row(ui, "Keep clips under", "Oldest clips go first", |ui| {
+                    let opts: Vec<(u32, String)> = [500, 250, 100, 50, 25, 0]
+                        .iter()
+                        .map(|&g| (g, if g == 0 { "No limit".to_string() } else { format!("{g} GB") }))
+                        .collect();
+                    changed |= chips(ui, &mut self.cfg.cleanup_max_gb, &opts);
+                });
+                divider(ui);
+                setting_row(ui, "Delete clips older than", "", |ui| {
+                    let opts: Vec<(u32, String)> = [(365, "1 year"), (90, "90 days"), (30, "30 days"), (7, "7 days"), (0, "Never")]
+                        .iter()
+                        .map(|&(d, l)| (d, l.to_string()))
+                        .collect();
+                    changed |= chips(ui, &mut self.cfg.cleanup_max_days, &opts);
+                });
+                divider(ui);
+                setting_row(ui, "Use the Recycle Bin", "Recoverable; frees space once emptied", |ui| {
+                    changed |= toggle(ui, &mut self.cfg.cleanup_recycle).changed();
+                });
+                let after = (self.cfg.cleanup_enabled, self.cfg.cleanup_max_gb, self.cfg.cleanup_max_days, self.cfg.clips_dir.clone());
+                if after != before {
+                    self.cleanup_preview = None;
+                }
+                let (text, warn) = self.cleanup_preview.get_or_insert_with(|| cleanup_summary(&self.cfg)).clone();
+                ui.add_space(2.0);
+                ui.label(RichText::new(text).size(12.0).color(if warn { AMBER } else { TEXT_FAINT }));
+            });
+
             section_title(ui, "General");
             card(ui, |ui| {
                 setting_row(ui, "Start with Windows", "Runs quietly in the tray after you sign in", |ui| {
@@ -665,6 +882,77 @@ impl App {
         });
     }
 
+    fn editor_page(&mut self, ui: &mut egui::Ui) {
+        let (Some(ed), Some(grabber)) = (self.editor.as_mut(), self.grabber.as_ref()) else {
+            self.page = Page::Clips;
+            return;
+        };
+        match ed.show(ui, grabber) {
+            EditorAction::None => {}
+            EditorAction::Back => {
+                self.editor = None;
+                self.page = Page::Clips;
+            }
+            act => {
+                let replace = matches!(act, EditorAction::Replace(..));
+                let (EditorAction::SaveCopy(start, end) | EditorAction::Replace(start, end)) = act else { return };
+                ed.busy = true;
+                let src = ed.path.clone();
+                let tx = self.trim_tx.clone();
+                let ctx = self.ctx.clone();
+                std::thread::spawn(move || {
+                    let result = trim_job(&src, start, end, replace);
+                    let _ = tx.send(result.map(|p| (p, replace)));
+                    ctx.request_repaint();
+                });
+            }
+        }
+    }
+
+    /// Results from background trim / shrink jobs.
+    fn pump_jobs(&mut self) {
+        while let Ok(r) = self.trim_rx.try_recv() {
+            match r {
+                Ok((_, replaced)) => {
+                    self.toast(if replaced { "Clip trimmed" } else { "Trimmed copy saved" });
+                    self.editor = None;
+                    self.page = Page::Clips;
+                }
+                Err(e) => {
+                    if let Some(ed) = self.editor.as_mut() {
+                        ed.busy = false;
+                    }
+                    self.toast(format!("Couldn't trim: {e}"));
+                }
+            }
+            self.lib.scan(&self.cfg.clips_dir);
+        }
+        while let Ok(u) = self.shrink_rx.try_recv() {
+            match u {
+                ShrinkUpdate::Progress(p, f) => {
+                    self.shrinking.insert(p, f);
+                }
+                ShrinkUpdate::Done(p, r) => {
+                    self.shrinking.remove(&p);
+                    match r {
+                        Ok(out) => {
+                            let size = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
+                            let copied = self.cfg.copy_after_shrink && win::copy_files_to_clipboard(&[&out]);
+                            let what = if out == p {
+                                format!("Already under {} MB", self.cfg.discord_limit_mb)
+                            } else {
+                                format!("Shrunk to {}", fmt_size(size))
+                            };
+                            self.toast(if copied { format!("{what} — copied, paste into Discord with Ctrl+V") } else { what });
+                        }
+                        Err(e) => self.toast(format!("Couldn't shrink: {e}")),
+                    }
+                    self.lib.scan(&self.cfg.clips_dir);
+                }
+            }
+        }
+    }
+
     fn capture_hotkey(&mut self, ctx: &egui::Context) {
         if !self.capturing_hotkey {
             return;
@@ -694,24 +982,34 @@ impl App {
     }
 }
 
-/// Rename / show in folder / delete, used by the "···" button and right-click.
-fn clip_menu(ui: &mut egui::Ui, path: &std::path::Path) -> Option<ClipAction> {
+/// The full clip menu, used by the "···" button and right-click.
+fn clip_menu(ui: &mut egui::Ui, path: &std::path::Path, favorite: bool, limit_mb: u32) -> Option<ClipAction> {
     let mut act = None;
+    let p = || path.to_path_buf();
     if ui.button("Play").clicked() {
-        act = Some(ClipAction::Play(path.to_path_buf()));
+        act = Some(ClipAction::Play(p()));
     }
     if ui.button("Copy").clicked() {
-        act = Some(ClipAction::Copy(path.to_path_buf()));
+        act = Some(ClipAction::Copy(p()));
+    }
+    if ui.button("Trim…").clicked() {
+        act = Some(ClipAction::Trim(p()));
+    }
+    if ui.button(format!("Shrink for Discord ({limit_mb} MB)")).clicked() {
+        act = Some(ClipAction::Shrink(p()));
+    }
+    if ui.button(if favorite { "Remove from favourites" } else { "Add to favourites" }).clicked() {
+        act = Some(ClipAction::Favorite(p(), !favorite));
     }
     if ui.button("Rename").clicked() {
-        act = Some(ClipAction::StartRename(path.to_path_buf()));
+        act = Some(ClipAction::StartRename(p()));
     }
     if ui.button("Show in folder").clicked() {
-        act = Some(ClipAction::Reveal(path.to_path_buf()));
+        act = Some(ClipAction::Reveal(p()));
     }
     ui.separator();
     if ui.button(RichText::new("Delete (to Recycle Bin)").color(RED)).clicked() {
-        act = Some(ClipAction::Delete(path.to_path_buf()));
+        act = Some(ClipAction::Delete(p()));
     }
     if act.is_some() {
         ui.close_menu();
@@ -719,7 +1017,37 @@ fn clip_menu(ui: &mut egui::Ui, path: &std::path::Path) -> Option<ClipAction> {
     act
 }
 
+/// Painted star toggle (no font glyph needed).
+fn star_button(ui: &mut egui::Ui, on: bool) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(30.0, 30.0), Sense::click());
+    let c = rect.center();
+    let mut pts = Vec::with_capacity(10);
+    for k in 0..10 {
+        let r = if k % 2 == 0 { 8.5 } else { 3.6 };
+        let a = std::f32::consts::PI * (k as f32) / 5.0 - std::f32::consts::FRAC_PI_2;
+        pts.push(c + Vec2::new(a.cos() * r, a.sin() * r));
+    }
+    let hover = resp.hovered();
+    let color = if on { Color32::from_rgb(255, 204, 64) } else if hover { TEXT } else { TEXT_FAINT };
+    // Fill as triangles from the centre (the star isn't convex).
+    let painter = ui.painter();
+    for k in 0..10 {
+        let a = pts[k];
+        let b = pts[(k + 1) % 10];
+        if on {
+            painter.add(egui::Shape::convex_polygon(vec![c, a, b], color, egui::Stroke::NONE));
+        } else {
+            painter.line_segment([a, b], egui::Stroke::new(1.4_f32, color));
+        }
+    }
+    resp.on_hover_text(if on { "Favourite: never auto-deleted" } else { "Add to favourites" })
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
 enum ClipAction {
+    Trim(PathBuf),
+    Shrink(PathBuf),
+    Favorite(PathBuf, bool),
     Play(PathBuf),
     Copy(PathBuf),
     Reveal(PathBuf),
@@ -739,6 +1067,7 @@ impl eframe::App for App {
             self.lib.scan(&self.cfg.clips_dir);
         }
         self.lib.pump(ctx);
+        self.pump_jobs();
         self.capture_hotkey(ctx);
         // Light polling only while the window is open.
         ctx.request_repaint_after(Duration::from_millis(1000));
@@ -759,6 +1088,7 @@ impl eframe::App for App {
             .show(ctx, |ui| match self.page {
                 Page::Clips => self.clips_page(ui),
                 Page::Settings => self.settings_page(ui),
+                Page::Editor => self.editor_page(ui),
             });
 
         // Toast
@@ -779,6 +1109,54 @@ impl eframe::App for App {
                 self.toast = None;
             }
         }
+    }
+}
+
+/// One-line preview of what auto-cleanup does with the current settings.
+fn cleanup_summary(cfg: &Config) -> (String, bool) {
+    let plan = crate::cleanup::plan(cfg);
+    let used = format!("Clips made by ezclip use {}.", fmt_size(plan.ezclip_bytes));
+    let limits_off = cfg.cleanup_max_gb == 0 && cfg.cleanup_max_days == 0;
+    if limits_off {
+        return (format!("{used} No limits set."), false);
+    }
+    if plan.remove.is_empty() {
+        return (format!("{used} Nothing would be removed right now."), false);
+    }
+    let what = format!("{} clip{} ({})", plan.remove.len(), if plan.remove.len() == 1 { "" } else { "s" }, fmt_size(plan.bytes()));
+    if cfg.cleanup_enabled {
+        (format!("{used} {what} will be removed now."), true)
+    } else {
+        (format!("{used} Turning this on would remove {what} right away."), true)
+    }
+}
+
+/// Lossless trim on a background thread. A copy goes next to the original as
+/// "<name> (trim).mp4"; replacing keeps the original's favourite/ezclip flags.
+fn trim_job(src: &std::path::Path, start: f64, end: f64, replace: bool) -> Result<PathBuf, String> {
+    use crate::clipmeta;
+    if replace {
+        let fav = clipmeta::is_favorite(src);
+        let ours = clipmeta::is_ezclip(src);
+        crate::clipfile::trim(src, src, start, end)?;
+        if fav {
+            clipmeta::set_favorite(src, true);
+        }
+        if ours {
+            clipmeta::mark_ezclip(src);
+        }
+        Ok(src.to_path_buf())
+    } else {
+        let stem = src.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        let mut dst = src.with_file_name(format!("{stem} (trim).mp4"));
+        let mut n = 2;
+        while dst.exists() {
+            dst = src.with_file_name(format!("{stem} (trim {n}).mp4"));
+            n += 1;
+        }
+        crate::clipfile::trim(src, &dst, start, end)?;
+        clipmeta::mark_ezclip(&dst);
+        Ok(dst)
     }
 }
 

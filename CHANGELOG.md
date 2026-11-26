@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.3.0
+
+- **Trim clips** (··· menu → *Trim…*): a preview and a timeline with start/end
+  handles. Trimming is lossless and instant: nothing is re-encoded, and the start
+  snaps to the nearest keyframe (every second for ezclip's clips). Save a trimmed copy,
+  or replace the original. **I** / **O** set start / end at the playhead.
+- **Favourites:** the ☆ on each clip. Favourites are never removed by auto-cleanup.
+  The mark is stored with the file, so it survives renaming it in Explorer.
+- **Auto-cleanup** (Settings → Cleanup, off by default): keep clips under a size
+  limit (25–500 GB) and/or delete clips older than 7 days – 1 year, oldest first.
+  Only clips made by ezclip are ever touched, so older videos from other
+  recorders in the same folders are safe. Uses the Recycle Bin by default.
+  Settings shows exactly what would be removed before you turn it on.
+- **Shrink for Discord** (··· menu): re-encodes on the GPU to fit your upload
+  limit (10 / 50 / 500 MB, set in Settings → Sharing). It lowers resolution and
+  frame rate as needed, then saves `<name> (discord).mp4` next to the clip and
+  copies it, ready for Ctrl+V. Clips already under the limit are just copied.
+- **Search, sort and filter** the clips list: search by name or game, filter by
+  game or favourites, sort by newest / oldest / largest / longest / name. The
+  list stays smooth with hundreds of clips.
+
 ## 0.2.0
 
 - **Game folders.** Each clip is named after the game you're playing and saved

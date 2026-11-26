@@ -5,7 +5,8 @@ your screen **and audio** in memory. Press a hotkey and they're saved as an MP4.
 
 - **Alt + F10** saves the last 30 seconds (both are configurable). Press again within 10 s to make that clip longer
 - Clips are named after the game and filed into your game folders (e.g. `E:\videos\Valorant`)
-- One click copies a clip so you can paste it straight into Discord
+- One click copies a clip so you can paste it straight into Discord, or shrinks it to fit Discord's upload limit
+- Lossless, instant trimming; favourites; optional auto-cleanup of old clips
 - Starts with Windows and lives in the system tray
 - Uses your GPU's hardware video encoder (AMD, NVIDIA or Intel), so games keep their FPS
 - Records system audio (game, music, voice chat) and, optionally, your microphone
@@ -28,6 +29,10 @@ in **Settings → General**. If you move the exe later, toggle it off and on aga
 | Save a clip | Press **Alt + F10**, or click **Save last 30 s** in the window, or right-click the tray icon → *Save clip* |
 | See your clips | Click the tray icon. Click a thumbnail to play it. **Copy** puts it on the clipboard for Discord. **···** (or right-click) has rename, show in folder and delete (to the Recycle Bin) |
 | Make a clip longer | Press the hotkey again within 10 s: the clip you just saved is extended |
+| Trim | **···** → *Trim…*: drag the white handles, then *Save as new clip* or *Replace original*. Lossless and instant |
+| Send to Discord | **Copy**, then Ctrl+V. If it's too big: **···** → *Shrink for Discord*. The small copy is made and copied for you |
+| Keep a clip forever | Click its ☆. Favourites are never auto-deleted |
+| Find a clip | Search box, game filter, sort menu and *Favourites* filter above the list |
 | Change hotkey / length / quality | **Settings**. Changes apply instantly |
 | Quit | Right-click the tray icon → *Quit* |
 
@@ -49,6 +54,11 @@ notifications on. The tray icon's dot shows the state: **red** = recording,
 - **Frame rate**: 30, 60, 120, 144
 - **Quality**: Low / Medium / High / Ultra. The page shows the bitrate and how much RAM the buffer uses.
 - **Audio**: system audio and/or microphone (mixed into one track)
+- **Sharing**: your Discord upload limit (10 / 50 / 500 MB) for *Shrink for Discord*
+- **Cleanup** (off by default): keep clips under a size limit and/or delete clips older
+  than N days, oldest first. Only clips made by ezclip are touched (older videos from
+  other recorders are safe) and favourites are always kept. The page shows what would be
+  removed before you switch it on.
 
 ## How it works (why it's light)
 

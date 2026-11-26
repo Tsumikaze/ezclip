@@ -8,6 +8,9 @@
 #[cfg(not(windows))]
 compile_error!("ezclip only supports Windows");
 
+mod cleanup;
+mod clipfile;
+mod clipmeta;
 mod config;
 mod display;
 mod game_match;

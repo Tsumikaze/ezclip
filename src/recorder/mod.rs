@@ -169,7 +169,7 @@ struct State {
     icons: [HICON; 3],
     tray_state: crate::icon::State,
     taskbar_created: u32,
-    saver: Sender<SaveJob>,
+    saver: Sender<Job>,
     last_press: Option<Instant>,
     last_save: Option<LastSave>,
 }
@@ -184,6 +184,12 @@ struct SaveJob {
     snap: Snapshot,
     path: PathBuf,
     extended: bool,
+}
+
+/// Work for the saver thread, done strictly in order.
+enum Job {
+    Save(SaveJob),
+    Cleanup(Box<Config>),
 }
 
 struct Saved {
@@ -248,6 +254,7 @@ pub fn run() -> Result<(), String> {
         let taskbar_created = RegisterWindowMessageW(w!("TaskbarCreated"));
         game::start_tracking();
         let saver = start_saver();
+        let _ = saver.send(Job::Cleanup(Box::new(cfg.clone())));
         let pipeline = Pipeline::start(&cfg, &buf, &status);
         STATE.with(|s| {
             *s.borrow_mut() = Some(State {
@@ -461,12 +468,22 @@ fn play_chirp() {
 
 /// One thread writes clips, in order, so an "extend" always lands after the
 /// clip it replaces.
-fn start_saver() -> Sender<SaveJob> {
-    let (tx, rx) = channel::<SaveJob>();
+fn start_saver() -> Sender<Job> {
+    let (tx, rx) = channel::<Job>();
     std::thread::Builder::new()
         .name("saver".into())
         .spawn(move || {
             while let Ok(job) = rx.recv() {
+                let job = match job {
+                    Job::Save(j) => j,
+                    Job::Cleanup(cfg) => {
+                        let n = crate::cleanup::run(&cfg);
+                        if n > 0 {
+                            crate::log::write(&format!("cleanup removed {n} clip(s)"));
+                        }
+                        continue;
+                    }
+                };
                 let result = write_clip(&job);
                 match &result {
                     Ok(s) => crate::log::write(&format!(
@@ -498,6 +515,7 @@ fn write_clip(job: &SaveJob) -> Result<Saved, String> {
         let _ = std::fs::remove_file(&job.path);
     }
     std::fs::rename(&tmp, &job.path).map_err(|e| e.to_string())?;
+    crate::clipmeta::mark_ezclip(&job.path);
     Ok(Saved { path: job.path.clone(), secs, extended: job.extended })
 }
 
@@ -513,7 +531,7 @@ fn save_clip(s: &mut State) {
         if now.duration_since(last.at) < std::time::Duration::from_secs(EXTEND_SECS as u64) {
             if let Some(snap) = s.buf.snapshot_from(last.start_pts) {
                 last.at = now;
-                let _ = s.saver.send(SaveJob { snap, path: last.path.clone(), extended: true });
+                let _ = s.saver.send(Job::Save(SaveJob { snap, path: last.path.clone(), extended: true }));
                 return;
             }
         }
@@ -525,7 +543,8 @@ fn save_clip(s: &mut State) {
     };
     let path = game::clip_path(&s.cfg);
     s.last_save = Some(LastSave { at: now, start_pts: snap.video[0].pts, path: path.clone() });
-    let _ = s.saver.send(SaveJob { snap, path, extended: false });
+    let _ = s.saver.send(Job::Save(SaveJob { snap, path, extended: false }));
+    let _ = s.saver.send(Job::Cleanup(Box::new(s.cfg.clone())));
 }
 
 fn on_saved(s: &State) {
@@ -571,6 +590,7 @@ fn reload(s: &mut State) {
     if hotkey_changed {
         register_hotkey(s);
     }
+    let _ = s.saver.send(Job::Cleanup(Box::new(s.cfg.clone())));
     refresh_tray(s);
 }
 
