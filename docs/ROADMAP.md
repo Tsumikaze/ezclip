@@ -10,7 +10,7 @@ Per-version details are in [CHANGELOG.md](../CHANGELOG.md). Downloads are on the
 | --- | --- |
 | Latest release | **v0.3.2** (2026-11-26) |
 | Builds | Every push is built and tested on Windows by GitHub Actions ([build](https://github.com/Tsumikaze/ezclip/actions/workflows/build.yml)); a new version number publishes a release automatically |
-| Tested on real Windows | **Yes.** Confirmed working with v0.3.2 on the developer's PC (i7-12700K, RX 9070 XT, Windows 10). Checklist: [#1](https://github.com/Tsumikaze/ezclip/issues/1) (closed) |
+| Tested on real Windows | **In review.** The main features are confirmed working with v0.3.2 on the developer's PC (i7-12700K, RX 9070 XT, Windows 10); the less critical checks are still open in [#1](https://github.com/Tsumikaze/ezclip/issues/1) |
 
 ### How it has been verified so far
 Development happens in a Linux cloud environment, cross-compiling for Windows:
@@ -23,9 +23,10 @@ Development happens in a Linux cloud environment, cross-compiling for Windows:
   renamed clips, other recorders' files).
 - **UI:** rendered and inspected as screenshots.
 
-Everything that needs a real PC (capture, GPU encoder, audio, hotkey, tray, game
-detection, Copy to Discord) was then confirmed on Windows in
-[#1](https://github.com/Tsumikaze/ezclip/issues/1).
+On a real PC, the main features (recording, game folders, Copy to Discord,
+Shrink for Discord) are confirmed working. The remaining, less critical checks are
+tracked in [#1](https://github.com/Tsumikaze/ezclip/issues/1), which stays open until
+the owner has gone through them.
 
 ## Done
 
