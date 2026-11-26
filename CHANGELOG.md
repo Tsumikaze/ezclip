@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.2
+
+- **Choose any size for Discord shrinking.** Settings → Sharing keeps the quick
+  presets (10 MB Free, 50 MB Nitro Basic, 500 MB Nitro) and adds a *Custom size*
+  field for any value, e.g. 25 MB. This is the size *Copy* fits clips to.
+- **One-off sizes per clip:** ··· → *Shrink to size* → 10 / 25 / 50 / 100 / 250 / 500 MB
+  (plus your custom size), without changing the setting.
+- Shrunk copies are now named by size (`<name> (25 MB).mp4`), so different sizes
+  of the same clip don't overwrite each other.
+
 ## 0.3.1
 
 Fixes from the first real-hardware test ([#1](https://github.com/Tsumikaze/ezclip/issues/1)):

@@ -61,7 +61,7 @@ notifications on. The tray icon's dot shows the state: **red** = recording,
 - **Frame rate**: 30, 60, 120, 144
 - **Quality**: Low / Medium / High / Ultra. The page shows the bitrate and how much RAM the buffer uses.
 - **Audio**: system audio and/or microphone (mixed into one track)
-- **Sharing**: your Discord upload limit (10 / 50 / 500 MB) for *Shrink for Discord*
+- **Sharing**: your Discord upload limit (10 / 50 / 500 MB presets, or any custom size). *Copy* and *Shrink for Discord* fit clips to it
 - **Cleanup** (off by default): keep clips under a size limit and/or delete clips older
   than N days, oldest first. Only clips made by ezclip are touched (older videos from
   other recorders are safe) and favourites are always kept. The page shows what would be

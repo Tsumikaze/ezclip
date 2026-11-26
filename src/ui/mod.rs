@@ -81,6 +81,8 @@ struct App {
     shrinking: HashMap<PathBuf, f32>,
     /// Shrinks started by the Copy button: copy the result when done.
     copy_when_shrunk: std::collections::HashSet<PathBuf>,
+    /// Target size of each running shrink (for its messages).
+    shrink_limits: HashMap<PathBuf, u32>,
     shrink_tx: Sender<ShrinkUpdate>,
     shrink_rx: Receiver<ShrinkUpdate>,
     cleanup_preview: Option<(String, bool)>,
@@ -134,6 +136,7 @@ impl App {
             trim_rx,
             shrinking: HashMap::new(),
             copy_when_shrunk: Default::default(),
+            shrink_limits: HashMap::new(),
             shrink_tx,
             shrink_rx,
             cleanup_preview: None,
@@ -555,7 +558,7 @@ impl App {
     }
 
     /// Copy a clip so it can be pasted into Discord. If it is over the upload
-    /// limit, shrink it first (or reuse an up-to-date "(discord)" copy) and
+    /// limit, shrink it first (or reuse an up-to-date "(N MB)" copy) and
     /// copy the small version when it's ready.
     fn copy_for_discord(&mut self, p: PathBuf) {
         let limit_mb = self.cfg.discord_limit_mb;
@@ -571,7 +574,7 @@ impl App {
             return;
         }
         let stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-        let small = p.with_file_name(format!("{stem} (discord).mp4"));
+        let small = p.with_file_name(format!("{stem} ({limit_mb} MB).mp4"));
         if let (Ok(ms), Ok(mo)) = (std::fs::metadata(&small), meta) {
             let fresh = match (ms.modified(), mo.modified()) {
                 (Ok(a), Ok(b)) => a >= b,
@@ -585,6 +588,7 @@ impl App {
         self.copy_when_shrunk.insert(p.clone());
         if !self.shrinking.contains_key(&p) {
             self.shrinking.insert(p.clone(), 0.0);
+            self.shrink_limits.insert(p.clone(), limit_mb);
             media::shrink(p, limit_mb, self.shrink_tx.clone(), self.ctx.clone());
         }
         self.toast(format!("{} is over {limit_mb} MB — shrinking it first, it'll be copied when ready", fmt_size(size)));
@@ -597,11 +601,12 @@ impl App {
                 self.editor = Some(Editor::open(p, grabber));
                 self.page = Page::Editor;
             }
-            ClipAction::Shrink(p) => {
+            ClipAction::Shrink(p, mb) => {
                 if !self.shrinking.contains_key(&p) {
                     self.shrinking.insert(p.clone(), 0.0);
-                    media::shrink(p, self.cfg.discord_limit_mb, self.shrink_tx.clone(), self.ctx.clone());
-                    self.toast(format!("Shrinking to under {} MB…", self.cfg.discord_limit_mb));
+                    self.shrink_limits.insert(p.clone(), mb);
+                    media::shrink(p, mb, self.shrink_tx.clone(), self.ctx.clone());
+                    self.toast(format!("Shrinking to under {mb} MB…"));
                 }
             }
             ClipAction::Favorite(p, on) => {
@@ -833,6 +838,19 @@ impl App {
                     changed |= chips(ui, &mut self.cfg.discord_limit_mb, &opts);
                 });
                 divider(ui);
+                setting_row(ui, "Custom size", "Any size you like: drag, or click and type", |ui| {
+                    let r = ui.add(
+                        egui::DragValue::new(&mut self.cfg.discord_limit_mb)
+                            .range(1..=2000)
+                            .speed(1.0)
+                            .suffix(" MB"),
+                    );
+                    // Save when the drag ends or typing finishes, not on every step.
+                    if r.drag_stopped() || r.lost_focus() || (r.changed() && !r.dragged() && !r.has_focus()) {
+                        changed = true;
+                    }
+                });
+                divider(ui);
                 setting_row(ui, "Copy fits Discord", "Copy shrinks clips over the limit first", |ui| {
                     changed |= toggle(ui, &mut self.cfg.copy_fits_discord).changed();
                 });
@@ -842,7 +860,7 @@ impl App {
                 });
                 ui.add_space(2.0);
                 ui.label(
-                    RichText::new("The small version is saved next to the clip as \"<name> (discord).mp4\" and reused next time. Shrink by hand from a clip's ··· menu.")
+                    RichText::new("The small version is saved next to the clip as \"<name> (10 MB).mp4\" and reused next time. For a one-off size, use a clip's ··· menu, Shrink to size.")
                         .size(12.0)
                         .color(TEXT_FAINT),
                 );
@@ -985,13 +1003,14 @@ impl App {
                 }
                 ShrinkUpdate::Done(p, r) => {
                     self.shrinking.remove(&p);
+                    let mb = self.shrink_limits.remove(&p).unwrap_or(self.cfg.discord_limit_mb);
                     let want_copy = self.copy_when_shrunk.remove(&p) || self.cfg.copy_after_shrink;
                     match r {
                         Ok(out) => {
                             let size = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
                             let copied = want_copy && win::copy_files_to_clipboard(&[&out]);
                             let what = if out == p {
-                                format!("Already under {} MB", self.cfg.discord_limit_mb)
+                                format!("Already under {mb} MB")
                             } else {
                                 format!("Shrunk to {}", fmt_size(size))
                             };
@@ -1051,8 +1070,20 @@ fn clip_menu(ui: &mut egui::Ui, path: &std::path::Path, favorite: bool, limit_mb
         act = Some(ClipAction::Trim(p()));
     }
     if ui.button(format!("Shrink for Discord ({limit_mb} MB)")).clicked() {
-        act = Some(ClipAction::Shrink(p()));
+        act = Some(ClipAction::Shrink(p(), limit_mb));
     }
+    ui.menu_button("Shrink to size", |ui| {
+        let mut sizes = vec![10u32, 25, 50, 100, 250, 500];
+        if !sizes.contains(&limit_mb) {
+            sizes.push(limit_mb);
+            sizes.sort();
+        }
+        for mb in sizes {
+            if ui.button(format!("{mb} MB")).clicked() {
+                act = Some(ClipAction::Shrink(p(), mb));
+            }
+        }
+    });
     if ui.button(if favorite { "Remove from favourites" } else { "Add to favourites" }).clicked() {
         act = Some(ClipAction::Favorite(p(), !favorite));
     }
@@ -1101,7 +1132,7 @@ fn star_button(ui: &mut egui::Ui, on: bool) -> egui::Response {
 
 enum ClipAction {
     Trim(PathBuf),
-    Shrink(PathBuf),
+    Shrink(PathBuf, u32),
     Favorite(PathBuf, bool),
     Play(PathBuf),
     Copy(PathBuf),

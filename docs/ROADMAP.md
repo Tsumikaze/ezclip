@@ -8,7 +8,7 @@ Per-version details are in [CHANGELOG.md](../CHANGELOG.md). Downloads are on the
 
 | | |
 | --- | --- |
-| Latest release | **v0.3.1** (2026-11-26) |
+| Latest release | **v0.3.2** (2026-11-26) |
 | Builds | Every push is built and tested on Windows by GitHub Actions ([build](https://github.com/Tsumikaze/ezclip/actions/workflows/build.yml)); a new version number publishes a release automatically |
 | Tested on real Windows | **Started.** Saving into game folders and Copy → Discord work; first bugs fixed in v0.3.1. Checklist: [#1](https://github.com/Tsumikaze/ezclip/issues/1) |
 
@@ -29,6 +29,9 @@ Discord. That's checklist [#1](https://github.com/Tsumikaze/ezclip/issues/1).
 
 ## Done
 
+### v0.3.2
+- [x] Any Discord shrink size: presets plus a custom MB value; per-clip *Shrink to size*
+
 ### v0.3.1
 - [x] Fix: "Show in folder" opened Documents for paths with spaces
 - [x] Copy shrinks clips over the Discord limit first (reuses an existing small copy)
@@ -38,7 +41,7 @@ Discord. That's checklist [#1](https://github.com/Tsumikaze/ezclip/issues/1).
 - [x] Lossless, instant trim editor
 - [x] Favourites (stored with the file, survive renames)
 - [x] Optional auto-cleanup by size / age (ezclip's clips only, favourites kept, preview first)
-- [x] Shrink for Discord (10 / 50 / 500 MB, GPU re-encode, auto-copy)
+- [x] Shrink for Discord (GPU re-encode to a size limit, auto-copy)
 - [x] Search, game filter, sort, favourites filter
 
 ### v0.2.0

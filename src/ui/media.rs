@@ -286,7 +286,7 @@ fn shrink_blocking(src: &Path, limit: u64, progress: &dyn Fn(f32)) -> std::resul
     }
 
     let stem = src.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-    let dst = src.with_file_name(format!("{stem} (discord).mp4"));
+    let dst = src.with_file_name(format!("{stem} ({} MB).mp4", limit / 1_000_000));
     let tmp = dst.with_extension("mp4.part");
 
     for _attempt in 0..3 {
