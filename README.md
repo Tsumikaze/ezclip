@@ -36,7 +36,7 @@ in **Settings → General**. If you move the exe later, toggle it off and on aga
 | Save a clip | Press **Alt + F10**, or click **Save last 30 s** in the window, or right-click the tray icon → *Save clip* |
 | See your clips | Click the tray icon. Click a thumbnail to play it. **Copy** puts it on the clipboard for Discord. **···** (or right-click) has rename, show in folder and delete (to the Recycle Bin) |
 | Make a clip longer | Press the hotkey again within 10 s: the clip you just saved is extended |
-| Trim | **···** → *Trim…*: drag the white handles, then *Save as new clip* or *Replace original*. Lossless and instant |
+| Trim | **···** → *Trim…*: play the clip (Space), drag the white handles, check with *Play selection*, then *Save as new clip* or *Replace original*. Lossless and instant |
 | Send to Discord | **Copy**, then Ctrl+V. If it's too big: **···** → *Shrink for Discord*. The small copy is made and copied for you |
 | Keep a clip forever | Click its ☆. Favourites are never auto-deleted |
 | Find a clip | Search box, game filter, sort menu and *Favourites* filter above the list |

@@ -3,6 +3,7 @@
 mod clips;
 mod editor;
 mod media;
+mod player;
 mod theme;
 mod widgets;
 

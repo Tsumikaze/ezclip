@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.1
+
+- **Play clips inside the trim editor**, with picture and sound.
+  - The round **Play / Pause** button, clicking the picture, or **Space** plays
+    from the red playhead. The playhead follows along.
+  - **Play selection** plays exactly what the trimmed clip will contain, from
+    the start handle to the end handle.
+  - Touching the timeline pauses, so you can play, pause, nudge a handle and
+    play again.
+
 ## 0.4.0
 
 - **AV1 and HEVC recording** (Settings → Video → *Codec*). On GPUs with an AV1 or

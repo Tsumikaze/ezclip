@@ -87,7 +87,8 @@ Work happens on `claude/clipping-program-rust-cpp-fyfxy6`. `main` is the repo's 
 ### UI (`src/ui/`)
 - `clips.rs`: scans the clips folder and one level of game subfolders. Thumbnails come from the Windows shell (`IShellItemImageFactory`) on a worker thread, and durations and codecs from `clipfile::quick_info`.
 - `media.rs`: Media Foundation in the window process. `FrameGrabber` is a worker that decodes single frames (source reader → RGB32) for the trim preview and keeps only the newest request. `HoverGrabber` decodes 8 small keyframe-only frames of the hovered clip for thumbnail scrubbing; hovering another clip abandons the current one. `shrink` is "Shrink for Discord": source reader (advanced video processing: scale + NV12) → sink writer (hardware H.264 + AAC). It picks resolution and fps from the bitrate budget and retries with a lower bitrate if the file comes out too big.
-- `editor.rs`: the trim view (`Page::Editor`). Trim and shrink jobs run on threads and report back over channels drained in `App::pump_jobs`.
+- `player.rs`: playback in the trim editor. A video thread (source reader with advanced video processing → RGB32 at ≤960×540, frames shown when due, late frames dropped) and an audio thread (source reader → 48 kHz float → WASAPI render with AUTOCONVERTPCM) share one start `Instant`. Dropping the `Player` stops both.
+- `editor.rs`: the trim view (`Page::Editor`). Space or the Play button plays from the playhead, *Play selection* plays start→end, and touching the timeline pauses. Trim and shrink jobs run on threads and report back over channels drained in `App::pump_jobs`.
 - `theme.rs` / `widgets.rs`: the black theme loads Segoe UI from `C:\Windows\Fonts` when available. It provides custom chips, a toggle, cards and `setting_row`.
 
 egui layout pitfalls already hit here:

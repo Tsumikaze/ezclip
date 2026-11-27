@@ -10,28 +10,28 @@ use windows::Win32::Media::MediaFoundation::*;
 use windows::Win32::System::Com::*;
 
 const MF_VERSION: u32 = 0x0002_0070;
-const FIRST_VIDEO: u32 = MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32;
-const FIRST_AUDIO: u32 = MF_SOURCE_READER_FIRST_AUDIO_STREAM.0 as u32;
-const ALL_STREAMS: u32 = MF_SOURCE_READER_ALL_STREAMS.0 as u32;
+pub(super) const FIRST_VIDEO: u32 = MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32;
+pub(super) const FIRST_AUDIO: u32 = MF_SOURCE_READER_FIRST_AUDIO_STREAM.0 as u32;
+pub(super) const ALL_STREAMS: u32 = MF_SOURCE_READER_ALL_STREAMS.0 as u32;
 const ANY_STREAM: u32 = MF_SOURCE_READER_ANY_STREAM.0 as u32;
 const MEDIASOURCE: u32 = MF_SOURCE_READER_MEDIASOURCE.0 as u32;
 
-fn mf_thread_init() {
+pub(super) fn mf_thread_init() {
     unsafe {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
         let _ = MFStartup(MF_VERSION, 0);
     }
 }
 
-fn unpack(v: u64) -> (u32, u32) {
+pub(super) fn unpack(v: u64) -> (u32, u32) {
     ((v >> 32) as u32, v as u32)
 }
 
-fn pack(a: u32, b: u32) -> u64 {
+pub(super) fn pack(a: u32, b: u32) -> u64 {
     ((a as u64) << 32) | b as u64
 }
 
-fn attrs(pairs: &[(GUID, u32)], guids: &[(GUID, GUID)]) -> Result<IMFAttributes> {
+pub(super) fn attrs(pairs: &[(GUID, u32)], guids: &[(GUID, GUID)]) -> Result<IMFAttributes> {
     unsafe {
         let mut a = None;
         MFCreateAttributes(&mut a, (pairs.len() + guids.len()) as u32)?;

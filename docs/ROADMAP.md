@@ -8,7 +8,7 @@ Per-version details are in [CHANGELOG.md](../CHANGELOG.md). Downloads are on the
 
 | | |
 | --- | --- |
-| Latest release | **v0.4.0** (2026-11-27) |
+| Latest release | **v0.4.1** (2026-11-27) |
 | Builds | Every push is built and tested on Windows by GitHub Actions ([build](https://github.com/Tsumikaze/ezclip/actions/workflows/build.yml)); a new version number publishes a release automatically |
 | Tested on real Windows | **In review.** The main features are confirmed working with v0.3.2 on the developer's PC (i7-12700K, RX 9070 XT, Windows 10); the less critical checks are still open in [#1](https://github.com/Tsumikaze/ezclip/issues/1) |
 
@@ -30,6 +30,9 @@ tracked in [#1](https://github.com/Tsumikaze/ezclip/issues/1), which stays open 
 the owner has gone through them.
 
 ## Done
+
+### v0.4.1
+- [x] Playback (picture + sound) in the trim editor; *Play selection* plays what will be kept
 
 ### v0.4.0
 - [x] AV1 / HEVC recording option with H.264 fallback, plus a new built-in MP4 writer ([#2](https://github.com/Tsumikaze/ezclip/issues/2))
