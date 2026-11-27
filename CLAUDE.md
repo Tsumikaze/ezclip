@@ -33,6 +33,8 @@ CI publishes a GitHub release `v<version>` from builds of `main` whenever `Cargo
 
 Do not push git tags: tag pushes are blocked from cloud sessions, and CI creates the tag itself.
 
+Commits are authored as the owner so they count on their GitHub contribution graph. Before committing, set the repo identity: `git config user.name "IceAngelEZ"` and `git config user.email "156002147+Tsumikaze@users.noreply.github.com"` (their GitHub no-reply address, as on the initial commit; never their personal email). Keep the `Co-Authored-By: Claude` trailer in each commit message.
+
 Progress is tracked on GitHub. `docs/ROADMAP.md` holds status, done/next lists, verification notes and known limitations. Planned features and the real-hardware test checklist are GitHub issues. When a version ships, update the roadmap and close its issues with a comment. The real-hardware test checklist (#1) is closed by the owner only, never by a session.
 
 Work happens on `claude/clipping-program-rust-cpp-fyfxy6`. `main` is the repo's front page, so after each pushed change, fast-forward it as well (`git push origin HEAD:main`, after checking that `origin/main` is an ancestor). The owner approved keeping `main` current this way.
