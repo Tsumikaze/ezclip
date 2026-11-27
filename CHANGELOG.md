@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.4.0
+
+- **AV1 and HEVC recording** (Settings → Video → *Codec*). On GPUs with an AV1 or
+  HEVC hardware encoder (like the RX 9070 XT), clips are about 35 % smaller at the same
+  quality, and the replay buffer uses less RAM. H.264 stays the default because it plays
+  everywhere. If the chosen encoder isn't available, ezclip records H.264 and says so
+  in the sidebar.
+  - Playing AV1/HEVC clips in Windows' own apps (and their thumbnails) needs
+    Microsoft's free *AV1 Video Extension* / the *HEVC Video Extensions*. VLC, mpv,
+    browsers and Discord play them without that.
+  - *Trim* works on H.264 clips only for now (it says so). *Shrink for Discord* works
+    on all of them and always outputs H.264.
+- **Hover to preview:** move the mouse across a clip's thumbnail to scrub through it.
+  The time badge shows where you are. Click still plays it.
+- **Save sound:** choose *Chirp*, *Click*, *Bell* or *Rise*, and set the volume
+  (Settings → Saving). Each plays a preview when picked. Still nothing visual on save.
+- Saved clips now carry a colour tag (BT.709), so players show the colours exactly as
+  recorded.
+- Under the hood: a new built-in MP4 writer (H.264 / HEVC / AV1 + AAC). It was
+  checked against real streams with ffmpeg: zero decode errors, and codec config
+  boxes byte-identical to ffmpeg's own.
+
 ## 0.3.2
 
 - **Choose any size for Discord shrinking.** Settings → Sharing keeps the quick

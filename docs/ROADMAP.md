@@ -8,7 +8,7 @@ Per-version details are in [CHANGELOG.md](../CHANGELOG.md). Downloads are on the
 
 | | |
 | --- | --- |
-| Latest release | **v0.3.2** (2026-11-26) |
+| Latest release | **v0.4.0** (2026-11-27) |
 | Builds | Every push is built and tested on Windows by GitHub Actions ([build](https://github.com/Tsumikaze/ezclip/actions/workflows/build.yml)); a new version number publishes a release automatically |
 | Tested on real Windows | **In review.** The main features are confirmed working with v0.3.2 on the developer's PC (i7-12700K, RX 9070 XT, Windows 10); the less critical checks are still open in [#1](https://github.com/Tsumikaze/ezclip/issues/1) |
 
@@ -16,9 +16,10 @@ Per-version details are in [CHANGELOG.md](../CHANGELOG.md). Downloads are on the
 Development happens in a Linux cloud environment, cross-compiling for Windows:
 - **Compiles** for Windows (MinGW locally, MSVC in CI) with no warnings.
 - **Unit tests:** replay buffer trimming/extension, game-folder matching, clip-name recognition.
-- **MP4 output and trimming:** real H.264/AAC streams generated with ffmpeg were pushed
-  through the same code. Results were checked with ffprobe (duration, A/V start times)
-  and decoded with ffmpeg with zero errors, including clips with B-frames.
+- **MP4 output and trimming:** real H.264, HEVC and AV1 streams (+ AAC) generated with
+  ffmpeg were pushed through the same code. Results were checked with ffprobe (duration,
+  A/V start times) and decoded with ffmpeg with zero errors, including clips with
+  B-frames. The HEVC/AV1 config boxes are byte-identical to ffmpeg's.
 - **Auto-cleanup:** checked on a mock folder (age limit, size limit, favourites,
   renamed clips, other recorders' files).
 - **UI:** rendered and inspected as screenshots.
@@ -29,6 +30,11 @@ tracked in [#1](https://github.com/Tsumikaze/ezclip/issues/1), which stays open 
 the owner has gone through them.
 
 ## Done
+
+### v0.4.0
+- [x] AV1 / HEVC recording option with H.264 fallback, plus a new built-in MP4 writer ([#2](https://github.com/Tsumikaze/ezclip/issues/2))
+- [x] Hover a thumbnail to scrub through the clip ([#3](https://github.com/Tsumikaze/ezclip/issues/3))
+- [x] Save sound: four sounds and a volume control ([#4](https://github.com/Tsumikaze/ezclip/issues/4))
 
 ### v0.3.2
 - [x] Any Discord shrink size: presets plus a custom MB value; per-clip *Shrink to size*
@@ -55,25 +61,6 @@ the owner has gone through them.
 - [x] Replay buffer in the tray, hotkey save, GPU (hardware) H.264 encoding, system audio + mic
 - [x] Starts with Windows; black, minimal window with clips library and settings
 
-## Next: v0.4.0 (planned 2026-11-27, 9:00 CET)
-- [ ] AV1 / HEVC encoding option: [#2](https://github.com/Tsumikaze/ezclip/issues/2)
-- [ ] Hover a thumbnail to preview the clip: [#3](https://github.com/Tsumikaze/ezclip/issues/3)
-- [ ] Save sound: volume and choice of sounds: [#4](https://github.com/Tsumikaze/ezclip/issues/4)
+## Next
+Nothing scheduled. Pick from the ideas below, or open an issue.
 
-## Ideas not scheduled
-- Separate audio tracks (game / mic) and volume sliders
-- Draw the mouse cursor into clips
-- "Only record while a game is running" option
-- Second hotkey for a longer clip
-
-## Known limitations
-- The mouse cursor isn't drawn into clips.
-- The microphone is mixed into the same track as system audio.
-- HDR desktops may look washed out.
-- Trim only works on H.264 MP4s (most clips; other formats show a message).
-- Windows only (by design).
-
-## Working on ezclip
-Build commands, architecture notes and gotchas are in [CLAUDE.md](../CLAUDE.md).
-The release process: bump `version` in `Cargo.toml`, add a `## <version>` section to
-`CHANGELOG.md`, and push. CI builds, tests and publishes the release.

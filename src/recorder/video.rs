@@ -4,7 +4,7 @@
 //! NV12 (and optionally scaled) by the D3D11 video processor — the same fixed
 //! function block used for video playback — and handed to the encoder as a
 //! texture. The CPU only paces frames and moves small encoded packets around.
-use super::buffer::{ClipBuffer, TICKS};
+use super::buffer::{ClipBuffer, VideoCodec, TICKS};
 use super::encoder::{texture_sample, memory_sample, EncoderEvent, VideoEncoder, VideoSettings};
 use super::StatusSink;
 use crate::config::{Quality, Resolution};
@@ -25,6 +25,7 @@ pub struct VideoParams {
     pub fps: u32,
     pub resolution: Resolution,
     pub quality: Quality,
+    pub codec: crate::config::Codec,
 }
 
 const POOL: usize = 8;
@@ -403,14 +404,29 @@ fn run(p: &VideoParams, start: Instant, stop: &AtomicBool, buf: &ClipBuffer, sta
     let m = mons.get(p.monitor as usize).or(mons.first()).ok_or("no monitor found")?;
     let (dw, dh) = (m.width, m.height);
     let (ow, oh) = p.resolution.output_size(dw, dh);
-    let bitrate = p.quality.bitrate(ow, oh, p.fps);
-
     let gpu = Gpu::new(&m.adapter).map_err(e("create D3D11 device"))?;
     let luid = unsafe { m.adapter.GetDesc1().map_err(e("adapter"))?.AdapterLuid };
-    let enc = VideoEncoder::create(&gpu.device, luid, &VideoSettings { width: ow, height: oh, fps: p.fps, bitrate })?;
+    let settings = |codec: crate::config::Codec| {
+        let bitrate = (p.quality.bitrate(ow, oh, p.fps) as f64 * codec.bitrate_factor()) as u32;
+        VideoSettings { width: ow, height: oh, fps: p.fps, bitrate, codec }
+    };
+    // HEVC/AV1 need a hardware encoder; if there isn't one, record H.264.
+    let mut note = String::new();
+    let (enc, vs) = match VideoEncoder::create(&gpu.device, luid, &settings(p.codec)) {
+        Ok(enc) => (enc, settings(p.codec)),
+        Err(err) if p.codec != crate::config::Codec::H264 => {
+            crate::log::write(&format!("{} encoder unavailable ({err}); using H.264", p.codec.label()));
+            note = format!(" ({} not available, using H.264)", p.codec.label());
+            let vs = settings(crate::config::Codec::H264);
+            (VideoEncoder::create(&gpu.device, luid, &vs)?, vs)
+        }
+        Err(err) => return Err(err),
+    };
+    let bitrate = vs.bitrate;
     crate::log::write(&format!(
-        "video: {dw}x{dh} -> {ow}x{oh} @ {} fps, {} kbps, encoder '{}' (gpu input: {}, async: {})",
+        "video: {dw}x{dh} -> {ow}x{oh} @ {} fps, {} {} kbps, encoder '{}' (gpu input: {}, async: {})",
         p.fps,
+        vs.codec.label(),
         bitrate / 1000,
         enc.name,
         enc.gpu_input,
@@ -420,11 +436,17 @@ fn run(p: &VideoParams, start: Instant, stop: &AtomicBool, buf: &ClipBuffer, sta
     let mut dup = Duplicator::new(m.output.clone(), &gpu.device).map_err(e("start screen capture"))?;
     let mut conv = Converter::new(&gpu, dw, dh, DXGI_FORMAT_B8G8R8A8_UNORM, ow, oh, p.fps, !enc.gpu_input).map_err(e("video processor"))?;
 
-    buf.set_video_format(ow, oh, p.fps);
+    let codec = match vs.codec {
+        crate::config::Codec::H264 => VideoCodec::H264,
+        crate::config::Codec::Hevc => VideoCodec::Hevc,
+        crate::config::Codec::Av1 => VideoCodec::Av1,
+    };
+    buf.set_video_format(ow, oh, p.fps, codec);
     status.video_ok(&format!(
-        "{ow}×{oh} · {} fps · {} Mbps · {}",
+        "{ow}×{oh} · {} fps · {} Mbps · {} {}{note}",
         p.fps,
         (bitrate + 500_000) / 1_000_000,
+        vs.codec.label(),
         if enc.hardware { "GPU encoder" } else { "CPU encoder" }
     ));
 
@@ -470,8 +492,8 @@ fn run(p: &VideoParams, start: Instant, stop: &AtomicBool, buf: &ClipBuffer, sta
                     None => return Ok(()),
                 },
                 EncoderEvent::HaveOutput => {
-                    if let Some((pts, data)) = enc.output().map_err(e("encoder output"))? {
-                        buf.push_video(pts, data);
+                    if let Some((pts, data, key)) = enc.output().map_err(e("encoder output"))? {
+                        buf.push_video(pts, data, key);
                     }
                 }
                 EncoderEvent::Other => {}
@@ -481,8 +503,8 @@ fn run(p: &VideoParams, start: Instant, stop: &AtomicBool, buf: &ClipBuffer, sta
                 Some(s) => enc.input(&s).map_err(e("encode"))?,
                 None => return Ok(()),
             }
-            while let Some((pts, data)) = enc.output().map_err(e("encoder output"))? {
-                buf.push_video(pts, data);
+            while let Some((pts, data, key)) = enc.output().map_err(e("encoder output"))? {
+                buf.push_video(pts, data, key);
             }
         }
         if last_mem_log.elapsed() > Duration::from_secs(60) {

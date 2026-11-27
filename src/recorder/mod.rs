@@ -14,13 +14,12 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::mpsc::{channel, Sender};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Instant;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
-use windows::Win32::Media::Audio::*;
 use windows::Win32::Media::MediaFoundation::MFStartup;
 use windows::Win32::System::Com::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -117,7 +116,7 @@ impl Pipeline {
         let mut threads = Vec::new();
         {
             let (stop, buf, status) = (stop.clone(), buf.clone(), status.clone());
-            let p = video::VideoParams { monitor: cfg.monitor, fps: cfg.fps, resolution: cfg.resolution, quality: cfg.quality };
+            let p = video::VideoParams { monitor: cfg.monitor, fps: cfg.fps, resolution: cfg.resolution, quality: cfg.quality, codec: cfg.codec };
             threads.push(
                 std::thread::Builder::new()
                     .name("video".into())
@@ -425,46 +424,6 @@ fn register_hotkey(s: &State) {
     }
 }
 
-/// A short, quiet two-tone chirp generated once as an in-memory WAV.
-fn chirp_wav() -> &'static [u8] {
-    static WAV: OnceLock<Vec<u8>> = OnceLock::new();
-    WAV.get_or_init(|| {
-        let rate = 44_100u32;
-        let mut pcm: Vec<i16> = Vec::new();
-        for (freq, ms) in [(880.0f32, 70u32), (1318.5f32, 90u32)] {
-            let n = rate * ms / 1000;
-            for i in 0..n {
-                let t = i as f32 / rate as f32;
-                let env = (i as f32 / 300.0).min(1.0) * ((n - i) as f32 / (n as f32 * 0.6)).min(1.0);
-                pcm.push(((t * freq * std::f32::consts::TAU).sin() * env * 0.22 * 32767.0) as i16);
-            }
-        }
-        let data_len = (pcm.len() * 2) as u32;
-        let mut w = Vec::with_capacity(44 + data_len as usize);
-        w.extend_from_slice(b"RIFF");
-        w.extend_from_slice(&(36 + data_len).to_le_bytes());
-        w.extend_from_slice(b"WAVEfmt ");
-        w.extend_from_slice(&16u32.to_le_bytes());
-        w.extend_from_slice(&1u16.to_le_bytes());
-        w.extend_from_slice(&1u16.to_le_bytes());
-        w.extend_from_slice(&rate.to_le_bytes());
-        w.extend_from_slice(&(rate * 2).to_le_bytes());
-        w.extend_from_slice(&2u16.to_le_bytes());
-        w.extend_from_slice(&16u16.to_le_bytes());
-        w.extend_from_slice(b"data");
-        w.extend_from_slice(&data_len.to_le_bytes());
-        for s in pcm {
-            w.extend_from_slice(&s.to_le_bytes());
-        }
-        w
-    })
-}
-
-fn play_chirp() {
-    unsafe {
-        let _ = PlaySoundW(PCWSTR(chirp_wav().as_ptr() as _), HMODULE::default(), SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
-    }
-}
 
 /// One thread writes clips, in order, so an "extend" always lands after the
 /// clip it replaces.
@@ -553,7 +512,7 @@ fn on_saved(s: &State) {
         match r {
             Ok(saved) => {
                 if s.cfg.sound_on_save {
-                    play_chirp();
+                    crate::sound::play(s.cfg.save_sound, s.cfg.save_volume);
                 }
                 if s.cfg.copy_after_save {
                     copy_files_to_clipboard(&[&saved.path]);

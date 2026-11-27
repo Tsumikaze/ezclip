@@ -90,7 +90,7 @@ impl FrameGrabber {
                     if open.as_ref().map(|(p, _)| p != &req.path).unwrap_or(true) {
                         open = Reader::open(&req.path).ok().map(|r| (req.path.clone(), r));
                     }
-                    let image = open.as_mut().and_then(|(_, r)| r.grab(req.seconds, req.exact).ok());
+                    let image = open.as_mut().and_then(|(_, r)| r.grab(req.seconds, req.exact, 960).ok());
                     if worker_tx.send(Frame { id: req.id, image }).is_err() {
                         break;
                     }
@@ -120,6 +120,8 @@ struct Reader {
     height: u32,
     crop: (u32, u32, u32, u32), // x, y, w, h of the visible picture
     frame_100ns: i64,
+    /// Seconds (0 if unknown).
+    duration: f64,
 }
 
 impl Reader {
@@ -149,11 +151,13 @@ impl Reader {
             }
             let (num, den) = cur.GetUINT64(&MF_MT_FRAME_RATE).map(unpack).unwrap_or((60, 1));
             let frame_100ns = (10_000_000i64 * den.max(1) as i64 / num.max(1) as i64).max(1);
-            Ok(Self { reader, width, height, crop, frame_100ns })
+            let duration = duration_100ns(&reader).map(|d| d as f64 / 1e7).unwrap_or(0.0);
+            Ok(Self { reader, width, height, crop, frame_100ns, duration })
         }
     }
 
-    fn grab(&mut self, seconds: f64, exact: bool) -> Result<egui::ColorImage> {
+    /// Decode the frame at `seconds`, downscaled to at most `max_w` pixels wide.
+    fn grab(&mut self, seconds: f64, exact: bool, max_w: usize) -> Result<egui::ColorImage> {
         unsafe {
             let target = (seconds.max(0.0) * 1e7) as i64;
             self.reader.SetCurrentPosition(&GUID::zeroed(), &PROPVARIANT::from(target))?;
@@ -175,11 +179,11 @@ impl Reader {
                 }
             }
             let s = best.ok_or_else(|| windows::core::Error::from(windows::Win32::Foundation::E_FAIL))?;
-            self.to_image(&s)
+            self.to_image(&s, max_w)
         }
     }
 
-    unsafe fn to_image(&self, s: &IMFSample) -> Result<egui::ColorImage> {
+    unsafe fn to_image(&self, s: &IMFSample, max_w: usize) -> Result<egui::ColorImage> {
         let buf = s.ConvertToContiguousBuffer()?;
         let (w, h) = (self.width as usize, self.height as usize);
         let mut scan0 = std::ptr::null_mut();
@@ -200,8 +204,8 @@ impl Reader {
             }
         }
         let (cx, cy, cw, ch) = (self.crop.0 as usize, self.crop.1 as usize, self.crop.2 as usize, self.crop.3 as usize);
-        // Box-downscale to at most 960 px wide.
-        let scale = (cw as f64 / 960.0).ceil().max(1.0) as usize;
+        // Box-downscale to at most `max_w` px wide.
+        let scale = (cw as f64 / max_w.max(1) as f64).ceil().max(1.0) as usize;
         let (ow, oh) = (cw / scale, ch / scale);
         let mut px = vec![0u8; ow * oh * 4];
         for oy in 0..oh {
@@ -230,6 +234,80 @@ impl Reader {
             let _ = buf.Unlock();
         }
         Ok(egui::ColorImage::from_rgba_unmultiplied([ow, oh], &px))
+    }
+}
+
+// ===================================================== hover preview ===
+
+/// Frames per clip for hover scrubbing.
+pub const HOVER_FRAMES: usize = 8;
+
+pub struct HoverFrame {
+    pub path: PathBuf,
+    /// Frame slot, or `None` if the clip can't be decoded at all.
+    pub index: Option<usize>,
+    pub image: Option<egui::ColorImage>,
+}
+
+/// Decodes a few small keyframe-only frames of the clip being hovered.
+/// Hovering another clip abandons the current one.
+pub struct HoverGrabber {
+    tx: Sender<PathBuf>,
+    rx: Receiver<HoverFrame>,
+}
+
+impl HoverGrabber {
+    pub fn new(ctx: egui::Context) -> Self {
+        let (tx, worker_rx) = channel::<PathBuf>();
+        let (worker_tx, rx) = channel::<HoverFrame>();
+        std::thread::Builder::new()
+            .name("hover".into())
+            .spawn(move || {
+                mf_thread_init();
+                let mut pending: Option<PathBuf> = None;
+                'next: loop {
+                    let mut path = match pending.take() {
+                        Some(p) => p,
+                        None => match worker_rx.recv() {
+                            Ok(p) => p,
+                            Err(_) => break,
+                        },
+                    };
+                    while let Ok(p) = worker_rx.try_recv() {
+                        path = p;
+                    }
+                    let mut reader = match Reader::open(&path) {
+                        Ok(r) if r.duration > 0.0 => r,
+                        _ => {
+                            let _ = worker_tx.send(HoverFrame { path, index: None, image: None });
+                            ctx.request_repaint();
+                            continue;
+                        }
+                    };
+                    for i in 0..HOVER_FRAMES {
+                        if let Ok(p) = worker_rx.try_recv() {
+                            pending = Some(p);
+                            continue 'next;
+                        }
+                        let t = reader.duration * (i as f64 + 0.5) / HOVER_FRAMES as f64;
+                        let image = reader.grab(t, false, 320).ok();
+                        if worker_tx.send(HoverFrame { path: path.clone(), index: Some(i), image }).is_err() {
+                            break 'next;
+                        }
+                        ctx.request_repaint();
+                    }
+                }
+            })
+            .unwrap();
+        Self { tx, rx }
+    }
+
+    pub fn request(&self, path: PathBuf) {
+        let _ = self.tx.send(path);
+    }
+
+    pub fn poll(&self) -> Vec<HoverFrame> {
+        self.rx.try_iter().collect()
     }
 }
 
@@ -276,7 +354,12 @@ fn shrink_blocking(src: &Path, limit: u64, progress: &dyn Fn(f32)) -> std::resul
     if size <= limit {
         return Ok(src.to_path_buf()); // already fits
     }
-    let (src_w, src_h, src_fps, dur) = unsafe { probe(src) }.map_err(|e| format!("can't read clip: {e}"))?;
+    let codec_hint = || match crate::clipfile::quick_info(src) {
+        Some(q) if q.codec_name() == "HEVC" => " (HEVC clips need Microsoft's \"HEVC Video Extensions\" to be decoded)".to_string(),
+        Some(q) if q.codec_name() == "AV1" => " (AV1 clips need Microsoft's free \"AV1 Video Extension\" to be decoded)".to_string(),
+        _ => String::new(),
+    };
+    let (src_w, src_h, src_fps, dur) = unsafe { probe(src) }.map_err(|e| format!("can't read clip: {e}{}", codec_hint()))?;
     let secs = (dur as f64 / 1e7).max(0.5);
     let audio_bytes_per_sec = if limit <= 10_000_000 { 12_000 } else { 16_000 }; // 96 / 128 kbps
     // 8 % headroom for the container and encoder overshoot.
@@ -293,7 +376,7 @@ fn shrink_blocking(src: &Path, limit: u64, progress: &dyn Fn(f32)) -> std::resul
         let p = plan(src_w, src_h, src_fps, video_bps as u32, audio_bytes_per_sec);
         unsafe { encode(src, &tmp, &p, dur, progress) }.map_err(|e| {
             let _ = std::fs::remove_file(&tmp);
-            format!("encoding failed: {e}")
+            format!("encoding failed: {e}{}", codec_hint())
         })?;
         let got = std::fs::metadata(&tmp).map(|m| m.len()).unwrap_or(u64::MAX);
         if got <= limit {

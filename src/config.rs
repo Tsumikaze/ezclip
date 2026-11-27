@@ -76,6 +76,32 @@ impl Quality {
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Codec {
+    H264,
+    Hevc,
+    Av1,
+}
+
+impl Codec {
+    pub const ALL: [Codec; 3] = [Self::H264, Self::Hevc, Self::Av1];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::H264 => "H.264",
+            Self::Hevc => "HEVC",
+            Self::Av1 => "AV1",
+        }
+    }
+    /// Newer codecs reach the same quality with fewer bits.
+    pub fn bitrate_factor(self) -> f64 {
+        match self {
+            Self::H264 => 1.0,
+            Self::Hevc => 0.7,
+            Self::Av1 => 0.6,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Hotkey {
     pub ctrl: bool,
     pub alt: bool,
@@ -149,6 +175,7 @@ pub struct Config {
     pub fps: u32,
     pub resolution: Resolution,
     pub quality: Quality,
+    pub codec: Codec,
     /// Index into the list of desktop monitors (see `display::monitors`).
     pub monitor: u32,
     pub system_audio: bool,
@@ -162,6 +189,9 @@ pub struct Config {
     /// Put each new clip on the clipboard (ready to paste into Discord).
     pub copy_after_save: bool,
     pub sound_on_save: bool,
+    pub save_sound: crate::sound::SaveSound,
+    /// 0–100.
+    pub save_volume: u32,
     pub notify_on_save: bool,
     /// Auto-cleanup of old ezclip clips (favourites are kept).
     pub cleanup_enabled: bool,
@@ -185,6 +215,7 @@ impl Default for Config {
             fps: 60,
             resolution: Resolution::Native,
             quality: Quality::High,
+            codec: Codec::H264,
             monitor: 0,
             system_audio: true,
             microphone: false,
@@ -194,6 +225,8 @@ impl Default for Config {
             new_game_folders: true,
             copy_after_save: false,
             sound_on_save: true,
+            save_sound: crate::sound::SaveSound::Chirp,
+            save_volume: 50,
             notify_on_save: false,
             cleanup_enabled: false,
             cleanup_max_gb: 100,
@@ -227,8 +260,13 @@ impl Config {
     }
 
     /// Settings whose change requires restarting the capture pipeline.
-    pub fn capture_key(&self) -> (u32, Resolution, Quality, u32, bool, bool) {
-        (self.fps, self.resolution, self.quality, self.monitor, self.system_audio, self.microphone)
+    pub fn capture_key(&self) -> (u32, Resolution, Quality, Codec, u32, bool, bool) {
+        (self.fps, self.resolution, self.quality, self.codec, self.monitor, self.system_audio, self.microphone)
+    }
+
+    /// Video bitrate for an output size with the chosen quality and codec.
+    pub fn video_bitrate(&self, w: u32, h: u32, codec: Codec) -> u32 {
+        (self.quality.bitrate(w, h, self.fps) as f64 * codec.bitrate_factor()) as u32
     }
 }
 

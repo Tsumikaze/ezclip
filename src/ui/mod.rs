@@ -6,11 +6,11 @@ mod media;
 mod theme;
 mod widgets;
 
-use crate::config::{vk_name, Config, Hotkey, Quality, Resolution, Status};
+use crate::config::{vk_name, Codec, Config, Hotkey, Quality, Resolution, Status};
 use crate::win;
 use clips::Library;
 use editor::{Editor, EditorAction};
-use media::{FrameGrabber, ShrinkUpdate};
+use media::{FrameGrabber, HoverGrabber, ShrinkUpdate, HOVER_FRAMES};
 use std::collections::HashMap;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use eframe::egui::{self, Align, Color32, Key, Layout, RichText, Sense, Vec2};
@@ -86,6 +86,12 @@ struct App {
     shrink_tx: Sender<ShrinkUpdate>,
     shrink_rx: Receiver<ShrinkUpdate>,
     cleanup_preview: Option<(String, bool)>,
+    // hover scrubbing
+    hover: Option<HoverGrabber>,
+    hover_frames: HashMap<PathBuf, Vec<Option<egui::TextureHandle>>>,
+    /// Clips whose frames can't be decoded (don't keep asking).
+    hover_failed: std::collections::HashSet<PathBuf>,
+    hover_requested: Option<PathBuf>,
 }
 
 pub fn run() -> Result<(), String> {
@@ -140,6 +146,10 @@ impl App {
             shrink_tx,
             shrink_rx,
             cleanup_preview: None,
+            hover: None,
+            hover_frames: HashMap::new(),
+            hover_failed: Default::default(),
+            hover_requested: None,
             cfg,
             page: Page::Clips,
             lib,
@@ -432,9 +442,20 @@ impl App {
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(Layout::left_to_right(Align::Center)));
         let ui = &mut child;
 
-        // Thumbnail
+        // Thumbnail. Hovering scrubs through a few frames of the clip.
         let (trect, tresp) = ui.allocate_exact_size(Vec2::new(thumb_w, row_h), Sense::click());
-        match &c.thumb {
+        let hover_pos = tresp.hover_pos();
+        let scrub = hover_pos.map(|p| ((p.x - trect.left()) / trect.width()).clamp(0.0, 0.999));
+        let hover_tex = scrub.and_then(|f| {
+            let frames = self.hover_frames.get(&path)?;
+            let want = (f * HOVER_FRAMES as f32) as usize;
+            // The wanted frame, or the nearest one already decoded.
+            (0..HOVER_FRAMES)
+                .flat_map(|d| [want.checked_sub(d), Some(want + d)])
+                .flatten()
+                .find_map(|i| frames.get(i).cloned().flatten())
+        });
+        match hover_tex.as_ref().or(c.thumb.as_ref()) {
             Some(t) => {
                 egui::Image::new(t)
                     .fit_to_exact_size(trect.size())
@@ -447,7 +468,10 @@ impl App {
             }
         }
         if let Some(d) = c.duration {
-            let label = fmt_duration(d);
+            let label = fmt_duration(match scrub {
+                Some(f) if hover_tex.is_some() => d * f as f64,
+                _ => d,
+            });
             let font = egui::FontId::new(11.5, bold());
             let galley = ui.painter().layout_no_wrap(label, font, Color32::WHITE);
             let br = egui::Rect::from_min_size(
@@ -457,15 +481,31 @@ impl App {
             ui.painter().rect_filled(br, 4.0, Color32::from_black_alpha(200));
             ui.painter().galley(br.min + Vec2::new(4.0, 2.0), galley, Color32::WHITE);
         }
-        if tresp.hovered() {
-            ui.painter().circle_filled(trect.center(), 18.0, Color32::from_black_alpha(170));
-            let c0 = trect.center();
-            ui.painter().add(egui::Shape::convex_polygon(
-                vec![c0 + Vec2::new(-5.0, -8.0), c0 + Vec2::new(9.0, 0.0), c0 + Vec2::new(-5.0, 8.0)],
-                Color32::WHITE,
-                egui::Stroke::NONE,
-            ));
+        if let Some(f) = scrub {
+            if hover_tex.is_some() {
+                // Scrub position along the bottom edge.
+                let y = trect.bottom() - 3.0;
+                ui.painter().rect_filled(
+                    egui::Rect::from_min_max(egui::pos2(trect.left() + 3.0, y), egui::pos2(trect.right() - 3.0, y + 2.0)),
+                    1.0,
+                    Color32::from_white_alpha(60),
+                );
+                ui.painter().rect_filled(
+                    egui::Rect::from_min_max(egui::pos2(trect.left() + 3.0, y), egui::pos2(trect.left() + 3.0 + (trect.width() - 6.0) * f, y + 2.0)),
+                    1.0,
+                    Color32::WHITE,
+                );
+            } else {
+                ui.painter().circle_filled(trect.center(), 18.0, Color32::from_black_alpha(170));
+                let c0 = trect.center();
+                ui.painter().add(egui::Shape::convex_polygon(
+                    vec![c0 + Vec2::new(-5.0, -8.0), c0 + Vec2::new(9.0, 0.0), c0 + Vec2::new(-5.0, 8.0)],
+                    Color32::WHITE,
+                    egui::Stroke::NONE,
+                ));
+            }
         }
+        let want_hover_frames = scrub.is_some();
         if tresp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
             act = Some(ClipAction::Play(path.clone()));
         }
@@ -551,6 +591,9 @@ impl App {
             }
         });
 
+        if want_hover_frames {
+            self.request_hover_frames(&path);
+        }
         if row_resp.double_clicked() && act.is_none() {
             act = Some(ClipAction::Play(path));
         }
@@ -738,13 +781,18 @@ impl App {
                     changed |= chips(ui, &mut self.cfg.fps, &opts);
                 });
                 divider(ui);
+                setting_row(ui, "Codec", "AV1 / HEVC: ~35% smaller, some apps can't play them", |ui| {
+                    let opts: Vec<(Codec, String)> = Codec::ALL.iter().rev().map(|c| (*c, c.label().to_string())).collect();
+                    changed |= chips(ui, &mut self.cfg.codec, &opts);
+                });
+                divider(ui);
                 setting_row(ui, "Quality", "Higher = sharper, larger files", |ui| {
                     let opts: Vec<(Quality, String)> = Quality::ALL.iter().rev().map(|q| (*q, q.label().to_string())).collect();
                     changed |= chips(ui, &mut self.cfg.quality, &opts);
                 });
                 let (mw, mh) = self.monitors.get(self.cfg.monitor as usize).map(|m| (m.1, m.2)).unwrap_or((1920, 1080));
                 let (ow, oh) = self.cfg.resolution.output_size(mw, mh);
-                let br = self.cfg.quality.bitrate(ow, oh, self.cfg.fps);
+                let br = self.cfg.video_bitrate(ow, oh, self.cfg.codec);
                 let ram = (br as f64 / 8.0 + 24_000.0) * (self.cfg.clip_seconds + 12) as f64;
                 ui.add_space(4.0);
                 ui.label(
@@ -822,9 +870,33 @@ impl App {
                     changed |= toggle(ui, &mut self.cfg.copy_after_save).changed();
                 });
                 divider(ui);
-                setting_row(ui, "Sound when saved", "A short, quiet chirp", |ui| {
+                setting_row(ui, "Sound when saved", "Your confirmation, even in fullscreen games", |ui| {
                     changed |= toggle(ui, &mut self.cfg.sound_on_save).changed();
                 });
+                if self.cfg.sound_on_save {
+                    divider(ui);
+                    setting_row(ui, "Sound", "Click one to hear it", |ui| {
+                        let opts: Vec<(crate::sound::SaveSound, String)> =
+                            crate::sound::SaveSound::ALL.iter().rev().map(|s| (*s, s.label().to_string())).collect();
+                        if chips(ui, &mut self.cfg.save_sound, &opts) {
+                            changed = true;
+                            crate::sound::play(self.cfg.save_sound, self.cfg.save_volume);
+                        }
+                    });
+                    divider(ui);
+                    setting_row(ui, "Volume", "Plays a preview when you let go", |ui| {
+                        if button(ui, "Play").clicked() {
+                            crate::sound::play(self.cfg.save_sound, self.cfg.save_volume);
+                        }
+                        ui.add_space(6.0);
+                        ui.spacing_mut().slider_width = 180.0;
+                        let r = ui.add(egui::Slider::new(&mut self.cfg.save_volume, 0..=100).suffix(" %"));
+                        if r.drag_stopped() || (r.changed() && !r.dragged()) {
+                            changed = true;
+                            crate::sound::play(self.cfg.save_sound, self.cfg.save_volume);
+                        }
+                    });
+                }
                 divider(ui);
                 setting_row(ui, "Notification when saved", "Errors are always shown", |ui| {
                     changed |= toggle(ui, &mut self.cfg.notify_on_save).changed();
@@ -974,6 +1046,39 @@ impl App {
                     let _ = tx.send(result.map(|p| (p, replace)));
                     ctx.request_repaint();
                 });
+            }
+        }
+    }
+
+    /// Start decoding hover frames for a clip (once).
+    fn request_hover_frames(&mut self, path: &PathBuf) {
+        if self.hover_frames.contains_key(path) || self.hover_failed.contains(path) || self.hover_requested.as_ref() == Some(path) {
+            return;
+        }
+        // Keep memory small: forget other clips' frames past a few dozen clips.
+        if self.hover_frames.len() > 24 {
+            self.hover_frames.clear();
+        }
+        self.hover_requested = Some(path.clone());
+        let ctx = self.ctx.clone();
+        self.hover.get_or_insert_with(|| HoverGrabber::new(ctx)).request(path.clone());
+    }
+
+    fn pump_hover(&mut self) {
+        let Some(h) = &self.hover else { return };
+        for f in h.poll() {
+            match f.index {
+                None => {
+                    self.hover_failed.insert(f.path.clone());
+                }
+                Some(i) => {
+                    let tex = f.image.map(|img| self.ctx.load_texture(format!("hover-{}-{i}", f.path.display()), img, egui::TextureOptions::LINEAR));
+                    let slots = self.hover_frames.entry(f.path.clone()).or_insert_with(|| vec![None; HOVER_FRAMES]);
+                    slots[i] = tex;
+                }
+            }
+            if self.hover_requested.as_ref() == Some(&f.path) && (f.index.is_none() || f.index == Some(HOVER_FRAMES - 1)) {
+                self.hover_requested = None;
             }
         }
     }
@@ -1155,6 +1260,7 @@ impl eframe::App for App {
         }
         self.lib.pump(ctx);
         self.pump_jobs();
+        self.pump_hover();
         self.capture_hotkey(ctx);
         // Light polling only while the window is open.
         ctx.request_repaint_after(Duration::from_millis(1000));

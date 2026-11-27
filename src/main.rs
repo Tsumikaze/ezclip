@@ -17,6 +17,7 @@ mod game_match;
 mod icon;
 mod log;
 mod recorder;
+mod sound;
 mod ui;
 mod win;
 

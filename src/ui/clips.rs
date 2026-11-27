@@ -133,10 +133,7 @@ impl Library {
 }
 
 fn mp4_duration(path: &Path) -> Option<f64> {
-    let f = std::fs::File::open(path).ok()?;
-    let size = f.metadata().ok()?.len();
-    let r = mp4::Mp4Reader::read_header(std::io::BufReader::new(f), size).ok()?;
-    Some(r.duration().as_secs_f64())
+    crate::clipfile::quick_info(path).map(|q| q.duration).filter(|d| *d > 0.0)
 }
 
 fn shell_thumbnail(path: &Path) -> Option<egui::ColorImage> {

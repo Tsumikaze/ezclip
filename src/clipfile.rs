@@ -69,7 +69,124 @@ fn find_tracks(r: &Mp4Reader<BufReader<std::fs::File>>) -> Result<(u32, Option<u
     Ok((video.ok_or("clip has no video track")?, audio))
 }
 
+/// Duration and video codec straight from the MP4 boxes. Cheap (reads only
+/// `moov`), works for every codec, used for the clips list.
+pub struct QuickInfo {
+    pub duration: f64,
+    /// Sample entry of the video track: `avc1`, `hvc1`, `av01`, ...
+    pub video_fourcc: Option<[u8; 4]>,
+}
+
+impl QuickInfo {
+    pub fn codec_name(&self) -> &'static str {
+        match self.video_fourcc.as_ref().map(|f| &f[..]) {
+            Some(b"avc1") | Some(b"avc3") => "H.264",
+            Some(b"hvc1") | Some(b"hev1") => "HEVC",
+            Some(b"av01") => "AV1",
+            _ => "unknown",
+        }
+    }
+    pub fn is_h264(&self) -> bool {
+        self.codec_name() == "H.264"
+    }
+}
+
+fn children(b: &[u8]) -> Vec<([u8; 4], &[u8])> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 8 <= b.len() {
+        let mut size = u32::from_be_bytes(b[i..i + 4].try_into().unwrap()) as usize;
+        let kind: [u8; 4] = b[i + 4..i + 8].try_into().unwrap();
+        let mut hdr = 8;
+        if size == 1 && i + 16 <= b.len() {
+            size = u64::from_be_bytes(b[i + 8..i + 16].try_into().unwrap()) as usize;
+            hdr = 16;
+        } else if size == 0 {
+            size = b.len() - i;
+        }
+        if size < hdr || i + size > b.len() {
+            break;
+        }
+        out.push((kind, &b[i + hdr..i + size]));
+        i += size;
+    }
+    out
+}
+
+fn child<'a>(b: &'a [u8], kind: &[u8; 4]) -> Option<&'a [u8]> {
+    children(b).into_iter().find(|(k, _)| k == kind).map(|(_, v)| v)
+}
+
+pub fn quick_info(path: &Path) -> Option<QuickInfo> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    let mut pos = 0u64;
+    // Walk top-level boxes, skipping mdat, until moov.
+    while pos + 8 <= len {
+        f.seek(SeekFrom::Start(pos)).ok()?;
+        let mut h = [0u8; 16];
+        f.read_exact(&mut h[..8]).ok()?;
+        let mut size = u32::from_be_bytes(h[..4].try_into().unwrap()) as u64;
+        let mut hdr = 8;
+        if size == 1 {
+            f.read_exact(&mut h[8..16]).ok()?;
+            size = u64::from_be_bytes(h[8..16].try_into().unwrap());
+            hdr = 16;
+        } else if size == 0 {
+            size = len - pos;
+        }
+        if size < hdr {
+            return None;
+        }
+        if &h[4..8] == b"moov" {
+            if size > 256 << 20 {
+                return None;
+            }
+            let mut moov = vec![0u8; (size - hdr) as usize];
+            f.read_exact(&mut moov).ok()?;
+            return parse_moov(&moov);
+        }
+        pos += size;
+    }
+    None
+}
+
+fn parse_moov(moov: &[u8]) -> Option<QuickInfo> {
+    let mvhd = child(moov, b"mvhd")?;
+    let (ts, dur) = if mvhd.first() == Some(&1) {
+        (u32::from_be_bytes(mvhd.get(20..24)?.try_into().ok()?) as f64, u64::from_be_bytes(mvhd.get(24..32)?.try_into().ok()?) as f64)
+    } else {
+        (u32::from_be_bytes(mvhd.get(12..16)?.try_into().ok()?) as f64, u32::from_be_bytes(mvhd.get(16..20)?.try_into().ok()?) as f64)
+    };
+    let mut video_fourcc = None;
+    for (k, trak) in children(moov) {
+        if &k != b"trak" {
+            continue;
+        }
+        let Some(mdia) = child(trak, b"mdia") else { continue };
+        let is_video = child(mdia, b"hdlr").and_then(|h| h.get(8..12)) == Some(&b"vide"[..]);
+        if !is_video {
+            continue;
+        }
+        let stsd = child(mdia, b"minf").and_then(|m| child(m, b"stbl")).and_then(|s| child(s, b"stsd"));
+        if let Some(entry) = stsd.and_then(|s| s.get(12..16)) {
+            video_fourcc = entry.try_into().ok();
+        }
+        break;
+    }
+    Some(QuickInfo { duration: if ts > 0.0 { dur / ts } else { 0.0 }, video_fourcc })
+}
+
 pub fn probe(path: &Path) -> Result<ClipInfo> {
+    if let Some(q) = quick_info(path) {
+        if q.video_fourcc.is_some() && !q.is_h264() {
+            return Err(format!(
+                "Trimming works on H.264 clips only, and this one is {}. Shrink for Discord still works on it.",
+                q.codec_name()
+            ));
+        }
+    }
     let r = open(path)?;
     let (vid, _) = find_tracks(&r)?;
     let t = &r.tracks()[&vid];

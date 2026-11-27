@@ -49,7 +49,7 @@ Work happens on `claude/clipping-program-rust-cpp-fyfxy6`. `main` is the repo's 
 - `Config::capture_key()` decides whether a reload restarts the capture pipeline. Restarting clears the buffer; hotkey, folder and length changes don't need a restart.
 
 ### Capture pipeline (`src/recorder/`)
-- `video.rs` (one thread): DXGI Desktop Duplication → copy into a source texture → D3D11 video processor (BGRA→NV12, scaling, BT.709 limited) → a pool of 8 NV12 textures → the hardware H.264 MFT (`encoder.rs`).
+- `video.rs` (one thread): DXGI Desktop Duplication → copy into a source texture → D3D11 video processor (BGRA→NV12, scaling, BT.709 limited) → a pool of 8 NV12 textures → the hardware H.264 / HEVC / AV1 MFT (`encoder.rs`, codec from `Config::codec`). If no HEVC/AV1 hardware encoder opens, it records H.264 and says so in the status. Only H.264 has a software fallback.
   - Textures go to the encoder zero-copy through `IMFDXGIDeviceManager`.
   - Hardware MFTs are **async**: the loop is driven by `METransformNeedInput` / `METransformHaveOutput` events, and frame pacing happens inside the NeedInput handler.
   - A sync software MFT with CPU readback is only a fallback.
@@ -60,11 +60,11 @@ Work happens on `claude/clipping-program-rust-cpp-fyfxy6`. `main` is the repo's 
   - The mixer emits exactly `elapsed × 48 kHz` samples, padding silence, then encodes to AAC with the Media Foundation AAC MFT.
   - It follows default-device changes.
 - **Shared clock:** both threads get the same `start: Instant`. All timestamps are 100 ns ticks since `start` (`buffer::TICKS`).
-- `buffer.rs`: `ClipBuffer` holds Annex-B video and raw AAC packets as `Arc<[u8]>`.
-  - Trimming drops whole GOPs, and a stream must start on an IDR frame.
-  - SPS/PPS are taken from the bitstream.
+- `buffer.rs`: `ClipBuffer` holds encoded video (Annex-B for H.264/HEVC, low-overhead OBUs for AV1) and raw AAC packets as `Arc<[u8]>`.
+  - Trimming drops whole GOPs, and a stream must start on a keyframe. H.264/HEVC keyframes are found from NAL types; AV1 uses the encoder's `MFSampleExtension_CleanPoint` flag.
+  - Parameter sets come from the bitstream: SPS/PPS, VPS/SPS/PPS, or the AV1 sequence header OBU.
   - Keep length is `clip_seconds + EXTEND_SECS`, which leaves room for double-press extension.
-- `mux.rs`: snapshot → MP4 with the `mp4` crate. There is no re-encode: Annex-B is converted to AVCC, SPS/PPS go into avcC, and the tracks are interleaved by time. Audio timing is by AAC frame index from the first video timestamp.
+- `mux.rs`: snapshot → MP4 with a small built-in writer (no re-encode). It writes `avc1`/`avcC`, `hvc1`/`hvcC` and `av01`/`av1C`, plus `mp4a`/`esds` and a BT.709 `colr` box. NAL streams become length-prefixed with parameter sets removed. AV1 drops temporal delimiters and forces OBU size fields. There's one sample per chunk, a 64-bit `mdat`, and `moov` at the end. Audio timing is by AAC frame index from the first video timestamp. The `hvcC`/`av1C` bytes were verified identical to ffmpeg's. The `mp4` crate is only used for reading and trimming (`clipfile.rs`).
 - `mod.rs`: tray, hotkey, saving and the pipeline lifecycle.
   - Recorder state lives in a `thread_local` `RefCell` reached through `with_state` (`try_borrow_mut`, so re-entrant window messages are safe).
   - Never hold the borrow across modal loops such as `TrackPopupMenu`.
@@ -76,13 +76,15 @@ Work happens on `claude/clipping-program-rust-cpp-fyfxy6`. `main` is the repo's 
   - When saving from the tray or the ezclip window, it uses the remembered game.
 
 ### Clip files (shared by both processes)
-- `clipfile.rs`: lossless trim of H.264/AAC MP4s through the `mp4` crate. Sample times come from the `stts`/`stss` tables (`track.trak`). The start snaps back to a keyframe. Trimming in place drops the reader before replacing the file.
+- `clipfile.rs`: `quick_info()` walks the MP4 boxes for duration and video codec (any codec; used by the clips list). Lossless trim of H.264/AAC MP4s through the `mp4` crate; HEVC/AV1 clips get a clear "H.264 only" message. Sample times come from the `stts`/`stss` tables (`track.trak`). The start snaps back to a keyframe. Trimming in place drops the reader before replacing the file.
 - `clipmeta.rs`: two per-clip flags stored as NTFS alternate data streams (`clip.mp4:ezclip.favorite`, `clip.mp4:ezclip.clip`), so they survive renames in Explorer. Favourites fall back to `%APPDATA%\ezclip\favorites.json` on drives without streams. "Made by ezclip" falls back to the `<name> YYYY-MM-DD HH-MM-SS.mp4` file name pattern.
 - `cleanup.rs`: `plan()` is a dry run, also used for the Settings preview; `run()` applies it. It only touches clips `clipmeta::is_ezclip` accepts (the user's clips folder also holds other recorders' videos) and never favourites. The recorder runs it on its saver thread at startup, after each save and on reload.
 
+- `sound.rs`: the save sounds (Chirp/Click/Bell/Rise), generated as in-memory WAVs at the chosen volume and played with `PlaySound`. The recorder plays them on save, the window plays previews.
+
 ### UI (`src/ui/`)
 - `clips.rs`: scans the clips folder and one level of game subfolders. Thumbnails come from the Windows shell (`IShellItemImageFactory`) on a worker thread, and durations from the `mp4` crate.
-- `media.rs`: Media Foundation in the window process. `FrameGrabber` is a worker that decodes single frames (source reader → RGB32) for the trim preview and keeps only the newest request. `shrink` is "Shrink for Discord": source reader (advanced video processing: scale + NV12) → sink writer (hardware H.264 + AAC). It picks resolution and fps from the bitrate budget and retries with a lower bitrate if the file comes out too big.
+- `media.rs`: Media Foundation in the window process. `FrameGrabber` is a worker that decodes single frames (source reader → RGB32) for the trim preview and keeps only the newest request. `HoverGrabber` decodes 8 small keyframe-only frames of the hovered clip for thumbnail scrubbing; hovering another clip abandons the current one. `shrink` is "Shrink for Discord": source reader (advanced video processing: scale + NV12) → sink writer (hardware H.264 + AAC). It picks resolution and fps from the bitrate budget and retries with a lower bitrate if the file comes out too big.
 - `editor.rs`: the trim view (`Page::Editor`). Trim and shrink jobs run on threads and report back over channels drained in `App::pump_jobs`.
 - `theme.rs` / `widgets.rs`: the black theme loads Segoe UI from `C:\Windows\Fonts` when available. It provides custom chips, a toggle, cards and `setting_row`.
 

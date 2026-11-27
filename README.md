@@ -40,6 +40,7 @@ in **Settings → General**. If you move the exe later, toggle it off and on aga
 | Send to Discord | **Copy**, then Ctrl+V. If it's too big: **···** → *Shrink for Discord*. The small copy is made and copied for you |
 | Keep a clip forever | Click its ☆. Favourites are never auto-deleted |
 | Find a clip | Search box, game filter, sort menu and *Favourites* filter above the list |
+| Peek into a clip | Move the mouse across its thumbnail to scrub through it |
 | Change hotkey / length / quality | **Settings**. Changes apply instantly |
 | Quit | Right-click the tray icon → *Quit* |
 
@@ -49,7 +50,7 @@ goes into the subfolder matching the game you're in (`E:\videos\Valorant`, `E:\v
 Existing folders are matched automatically. New games get a folder of their own, and
 clips from the desktop are saved in the main folder.
 
-A short chirp confirms each save. Nothing pops up on screen, though you can turn
+A short sound confirms each save (pick from four, and set the volume, in Settings → Saving). Nothing pops up on screen, though you can turn
 notifications on. The tray icon's dot shows the state: **red** = recording,
 **grey** = starting, **amber** = problem (hover it for details).
 
@@ -59,6 +60,7 @@ notifications on. The tray icon's dot shows the state: **red** = recording,
 - **Monitor**: which screen to record
 - **Resolution**: Native, 1440p, 1080p, 720p (downscaling happens on the GPU)
 - **Frame rate**: 30, 60, 120, 144
+- **Codec**: H.264 (plays everywhere), HEVC or AV1 (about 35 % smaller; needs a GPU that encodes them, else H.264 is used)
 - **Quality**: Low / Medium / High / Ultra. The page shows the bitrate and how much RAM the buffer uses.
 - **Audio**: system audio and/or microphone (mixed into one track)
 - **Sharing**: your Discord upload limit (10 / 50 / 500 MB presets, or any custom size). *Copy* and *Shrink for Discord* fit clips to it
@@ -71,7 +73,7 @@ notifications on. The tray icon's dot shows the state: **red** = recording,
 
 ```
 Desktop Duplication (GPU) ─► D3D11 video processor: BGRA→NV12 + scale (GPU)
-        ─► hardware H.264 encoder via Media Foundation (GPU, e.g. AMD VCN)
+        ─► hardware H.264 / HEVC / AV1 encoder via Media Foundation (GPU, e.g. AMD VCN)
         ─► compressed packets in a RAM ring buffer (last N seconds)
 WASAPI loopback + mic ─► 48 kHz mixer (timestamp-aligned) ─► AAC ─► same ring buffer
 
@@ -120,6 +122,6 @@ src/recorder/          tray, hotkey, capture pipeline
   audio.rs             WASAPI capture + mixer
   encoder.rs           Media Foundation H.264 (hardware) + AAC encoders
   buffer.rs            in-memory replay buffer
-  mux.rs               MP4 writer
+  mux.rs               MP4 writer (H.264 / HEVC / AV1 + AAC)
 src/ui/                the window (egui): clips library + settings
 ```

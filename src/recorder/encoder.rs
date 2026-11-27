@@ -116,15 +116,35 @@ pub struct VideoSettings {
     pub height: u32,
     pub fps: u32,
     pub bitrate: u32,
+    pub codec: crate::config::Codec,
+}
+
+impl VideoSettings {
+    fn subtype(&self) -> GUID {
+        match self.codec {
+            crate::config::Codec::H264 => MFVideoFormat_H264,
+            crate::config::Codec::Hevc => MFVideoFormat_HEVC,
+            crate::config::Codec::Av1 => MFVideoFormat_AV1,
+        }
+    }
+    fn profile(&self) -> u32 {
+        match self.codec {
+            crate::config::Codec::H264 => eAVEncH264VProfile_High.0 as u32,
+            crate::config::Codec::Hevc => eAVEncH265VProfile_Main_420_8.0 as u32,
+            crate::config::Codec::Av1 => eAVEncAV1VProfile_Main_420_8.0 as u32,
+        }
+    }
 }
 
 impl VideoEncoder {
+    /// Opens a hardware encoder for `s.codec`. Only H.264 falls back to the
+    /// software encoder; for HEVC/AV1 the caller falls back to H.264.
     pub fn create(device: &ID3D11Device, adapter_luid: LUID, s: &VideoSettings) -> std::result::Result<Self, String> {
         let mut acts = enum_mfts(
             MFT_CATEGORY_VIDEO_ENCODER,
             MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_SORTANDFILTER,
             MFVideoFormat_NV12,
-            MFVideoFormat_H264,
+            s.subtype(),
             MFMediaType_Video,
         );
         // Prefer the encoder that lives on the same GPU as the captured monitor.
@@ -149,6 +169,13 @@ impl VideoEncoder {
                     }
                 }
             }
+        }
+        if s.codec != crate::config::Codec::H264 {
+            return Err(if errors.is_empty() {
+                format!("no {} hardware encoder on this PC", s.codec.label())
+            } else {
+                errors.join("; ")
+            });
         }
         // Software fallback (uses CPU — only if the GPU encoder is unusable).
         let sw = enum_mfts(
@@ -197,13 +224,13 @@ impl VideoEncoder {
 
         let out = MFCreateMediaType()?;
         out.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
-        out.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_H264)?;
+        out.SetGUID(&MF_MT_SUBTYPE, &s.subtype())?;
         out.SetUINT32(&MF_MT_AVG_BITRATE, s.bitrate)?;
         out.SetUINT64(&MF_MT_FRAME_SIZE, pack(s.width, s.height))?;
         out.SetUINT64(&MF_MT_FRAME_RATE, pack(s.fps, 1))?;
         out.SetUINT64(&MF_MT_PIXEL_ASPECT_RATIO, pack(1, 1))?;
         out.SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)?;
-        out.SetUINT32(&MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_High.0 as u32)?;
+        let _ = out.SetUINT32(&MF_MT_MPEG2_PROFILE, s.profile());
         out.SetUINT32(&MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_16_235.0 as u32)?;
         out.SetUINT32(&MF_MT_YUV_MATRIX, MFVideoTransferMatrix_BT709.0 as u32)?;
         out.SetUINT32(&MF_MT_VIDEO_PRIMARIES, MFVideoPrimaries_BT709.0 as u32)?;
@@ -263,12 +290,14 @@ impl VideoEncoder {
         unsafe { self.mft.ProcessInput(0, sample, 0) }
     }
 
-    /// Returns (pts in 100 ns, Annex-B bytes) or None.
-    pub fn output(&self) -> Result<Option<(i64, Vec<u8>)>> {
+    /// Returns (pts in 100 ns, bitstream bytes, encoder says keyframe) or None.
+    /// H.264/HEVC come as Annex-B, AV1 as a low-overhead OBU stream.
+    pub fn output(&self) -> Result<Option<(i64, Vec<u8>, bool)>> {
         match process_output(&self.mft, self.provides_samples, self.out_size)? {
             Some(s) => unsafe {
                 let pts = s.GetSampleTime().unwrap_or(0);
-                Ok(Some((pts, sample_bytes(&s)?)))
+                let key = s.GetUINT32(&MFSampleExtension_CleanPoint).unwrap_or(0) != 0;
+                Ok(Some((pts, sample_bytes(&s)?, key)))
             },
             None => Ok(None),
         }
