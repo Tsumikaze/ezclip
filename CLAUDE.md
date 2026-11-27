@@ -29,7 +29,7 @@ Debug builds keep a console and echo the log to stderr. Release builds use the `
 
 ## Releases
 
-CI publishes a GitHub release `v<version>` whenever `Cargo.toml`'s `version` has no release yet. The release notes are that version's `## <version>` section of `CHANGELOG.md`. To release, bump the version, add the changelog section, and push to the branch.
+CI publishes a GitHub release `v<version>` from builds of `main` whenever `Cargo.toml`'s `version` has no release yet. The release notes are that version's `## <version>` section of `CHANGELOG.md`. To release, bump the version, add the changelog section, and push to the branch.
 
 Do not push git tags: tag pushes are blocked from cloud sessions, and CI creates the tag itself.
 
