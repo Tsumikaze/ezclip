@@ -37,6 +37,9 @@ pub struct Editor {
     pub busy: bool,
     /// Running playback, if any.
     player: Option<Player>,
+    /// "H.264", "HEVC", "AV1"... (for the no-preview hint)
+    codec: &'static str,
+    opened: std::time::Instant,
 }
 
 impl Editor {
@@ -44,7 +47,23 @@ impl Editor {
         let info = clipfile::probe(&path);
         let end = info.as_ref().map(|i| i.duration).unwrap_or(0.0);
         let name = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-        let mut e = Self { path, name, info, start: 0.0, end, cursor: 0.0, frame: None, next_id: 0, shown_id: 0, drag: None, busy: false, player: None };
+        let mut e = Self {
+            path,
+            name,
+            info,
+            start: 0.0,
+            end,
+            cursor: 0.0,
+            frame: None,
+            next_id: 0,
+            shown_id: 0,
+            drag: None,
+            busy: false,
+            player: None,
+            codec: "",
+            opened: std::time::Instant::now(),
+        };
+        e.codec = clipfile::quick_info(&e.path).map(|q| q.codec_name()).unwrap_or("");
         e.request(grabber, 0.0, false);
         e
     }
@@ -147,6 +166,17 @@ impl Editor {
             let scale = (prect.width() / size.x).min(prect.height() / size.y);
             let r = egui::Rect::from_center_size(prect.center(), size * scale);
             egui::Image::new(t).rounding(6.0).paint_at(ui, r);
+        }
+        if self.frame.is_none() && self.opened.elapsed().as_secs_f32() > 2.5 {
+            // Nothing decoded: say why instead of showing a black box.
+            let msg = match self.codec {
+                "HEVC" => "No preview: Windows needs Microsoft's \"HEVC Video Extensions\" to show HEVC clips.\nTrimming still works.",
+                "AV1" => "No preview: Windows needs Microsoft's free \"AV1 Video Extension\" to show AV1 clips.\nTrimming still works.",
+                _ => "No preview available for this clip. Trimming still works.",
+            };
+            ui.painter().text(prect.center(), egui::Align2::CENTER_CENTER, msg, egui::FontId::proportional(14.0), TEXT_DIM);
+        } else if self.frame.is_none() {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
         }
         if self.player.is_none() && presp.hovered() && !self.busy {
             // Big play icon over the paused picture.

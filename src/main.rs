@@ -16,6 +16,7 @@ mod display;
 mod game_match;
 mod icon;
 mod log;
+mod mp4w;
 mod recorder;
 mod sound;
 mod ui;

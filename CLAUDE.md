@@ -19,11 +19,11 @@ cargo build --release --target x86_64-pc-windows-gnu   # -> target/x86_64-pc-win
 
 On Windows, `cargo build --release` and `cargo test --release` work directly. A single test runs with `cargo test --release trims_to_window_on_keyframes`.
 
-Unit tests live in `src/recorder/buffer.rs`, `src/game_match.rs` and `src/clipmeta.rs`. These files, plus `src/clipfile.rs` and `src/cleanup.rs`, use no Windows APIs, but they sit in a Windows-only crate, so on Linux:
+Unit tests live in `src/recorder/buffer.rs`, `src/game_match.rs` and `src/clipmeta.rs`. These files, plus `src/clipfile.rs`, `src/mp4w.rs`, `src/recorder/mux.rs` and `src/cleanup.rs`, use no Windows APIs, but they sit in a Windows-only crate, so on Linux:
 - `cargo test --target x86_64-pc-windows-gnu --no-run` only checks that the tests compile.
 - To run them, include those files with `#[path]` in a scratch crate, with tiny stubs for `crate::win` / `crate::log` where needed.
 
-The same `#[path]` approach can also test `recorder/mux.rs` against real H.264/AAC streams made with ffmpeg, checking the result with ffprobe. CI (`.github/workflows/build.yml`, `windows-latest`) runs `cargo test --release` and the MSVC build on every push.
+The same `#[path]` approach tests `recorder/mux.rs` and `clipfile.rs` (trim) against real H.264/HEVC/AV1 + AAC files made with ffmpeg (`libx264`, `libx265`, `libsvtav1`), checking the results with ffprobe and an `ffmpeg -f null` decode. Split raw AV1 streams by walking OBUs, never by byte-pattern search. CI (`.github/workflows/build.yml`, `windows-latest`) runs `cargo test --release` and the MSVC build on every push.
 
 Debug builds keep a console and echo the log to stderr. Release builds use the `windows` subsystem and only log to `%APPDATA%\ezclip\{recorder,ui}.log`.
 
@@ -66,7 +66,7 @@ Work happens on `claude/clipping-program-rust-cpp-fyfxy6`. `main` is the repo's 
   - Trimming drops whole GOPs, and a stream must start on a keyframe. H.264/HEVC keyframes are found from NAL types; AV1 uses the encoder's `MFSampleExtension_CleanPoint` flag.
   - Parameter sets come from the bitstream: SPS/PPS, VPS/SPS/PPS, or the AV1 sequence header OBU.
   - Keep length is `clip_seconds + EXTEND_SECS`, which leaves room for double-press extension.
-- `mux.rs`: snapshot → MP4 with a small built-in writer (no re-encode). It writes `avc1`/`avcC`, `hvc1`/`hvcC` and `av01`/`av1C`, plus `mp4a`/`esds` and a BT.709 `colr` box. NAL streams become length-prefixed with parameter sets removed. AV1 drops temporal delimiters and forces OBU size fields. There's one sample per chunk, a 64-bit `mdat`, and `moov` at the end. Audio timing is by AAC frame index from the first video timestamp. The `hvcC`/`av1C` bytes were verified identical to ffmpeg's. The `mp4` crate is only used for reading and trimming (`clipfile.rs`).
+- `mux.rs`: snapshot → MP4 with a small built-in writer (no re-encode). It writes `avc1`/`avcC`, `hvc1`/`hvcC` and `av01`/`av1C`, plus `mp4a`/`esds` and a BT.709 `colr` box. NAL streams become length-prefixed with parameter sets removed. AV1 drops temporal delimiters and forces OBU size fields. There's one sample per chunk, a 64-bit `mdat`, and `moov` at the end. Audio timing is by AAC frame index from the first video timestamp. The `hvcC`/`av1C` bytes were verified identical to ffmpeg's. Box building and sample tables live in the shared `src/mp4w.rs`.
 - `mod.rs`: tray, hotkey, saving and the pipeline lifecycle.
   - Recorder state lives in a `thread_local` `RefCell` reached through `with_state` (`try_borrow_mut`, so re-entrant window messages are safe).
   - Never hold the borrow across modal loops such as `TrackPopupMenu`.
@@ -78,7 +78,8 @@ Work happens on `claude/clipping-program-rust-cpp-fyfxy6`. `main` is the repo's 
   - When saving from the tray or the ezclip window, it uses the remembered game.
 
 ### Clip files (shared by both processes)
-- `clipfile.rs`: `quick_info()` walks the MP4 boxes for duration and video codec (any codec; used by the clips list). Lossless trim of H.264/AAC MP4s through the `mp4` crate; HEVC/AV1 clips get a clear "H.264 only" message. Sample times come from the `stts`/`stss` tables (`track.trak`). The start snaps back to a keyframe. Trimming in place drops the reader before replacing the file.
+- `mp4w.rs`: the MP4 writing toolkit shared by saving (`mux.rs`) and trimming: box builders, `Track` (sample tables with optional `stss`/`ctts`, one sample per chunk, `stco`/`co64`), `trak`/`mvhd`/`ftyp`. There is no third-party MP4 crate.
+- `clipfile.rs`: its own MP4 reader. `quick_info()` returns duration and video codec for the clips list. `probe()`/`trim()` parse every track's `stts`/`ctts`/`stss`/`stsz`/`stsc`/`stco`/`co64` to locate samples. Trim is codec-agnostic: it keeps the video track and every audio track, copies the kept samples and the original `stsd` box verbatim, and rebuilds the timing tables with `mp4w`. The start snaps back to a keyframe. Edit lists aren't carried over, and fragmented MP4s are refused. Trimming in place drops the source handle before replacing the file.
 - `clipmeta.rs`: two per-clip flags stored as NTFS alternate data streams (`clip.mp4:ezclip.favorite`, `clip.mp4:ezclip.clip`), so they survive renames in Explorer. Favourites fall back to `%APPDATA%\ezclip\favorites.json` on drives without streams. "Made by ezclip" falls back to the `<name> YYYY-MM-DD HH-MM-SS.mp4` file name pattern.
 - `cleanup.rs`: `plan()` is a dry run, also used for the Settings preview; `run()` applies it. It only touches clips `clipmeta::is_ezclip` accepts (the user's clips folder also holds other recorders' videos) and never favourites. The recorder runs it on its saver thread at startup, after each save and on reload.
 
@@ -88,7 +89,7 @@ Work happens on `claude/clipping-program-rust-cpp-fyfxy6`. `main` is the repo's 
 - `clips.rs`: scans the clips folder and one level of game subfolders. Thumbnails come from the Windows shell (`IShellItemImageFactory`) on a worker thread, and durations and codecs from `clipfile::quick_info`.
 - `media.rs`: Media Foundation in the window process. `FrameGrabber` is a worker that decodes single frames (source reader → RGB32) for the trim preview and keeps only the newest request. `HoverGrabber` decodes 8 small keyframe-only frames of the hovered clip for thumbnail scrubbing; hovering another clip abandons the current one. `shrink` is "Shrink for Discord": source reader (advanced video processing: scale + NV12) → sink writer (hardware H.264 + AAC). It picks resolution and fps from the bitrate budget and retries with a lower bitrate if the file comes out too big.
 - `player.rs`: playback in the trim editor. A video thread (source reader with advanced video processing → RGB32 at ≤960×540, frames shown when due, late frames dropped) and an audio thread (source reader → 48 kHz float → WASAPI render with AUTOCONVERTPCM) share one start `Instant`. Dropping the `Player` stops both.
-- `editor.rs`: the trim view (`Page::Editor`). Space or the Play button plays from the playhead, *Play selection* plays start→end, and touching the timeline pauses. Trim and shrink jobs run on threads and report back over channels drained in `App::pump_jobs`.
+- `editor.rs`: the trim view (`Page::Editor`). Works for any codec; when Windows can't decode a preview (HEVC/AV1 without Microsoft's extensions), it says so over the picture. Space or the Play button plays from the playhead, *Play selection* plays start→end, and touching the timeline pauses. Trim and shrink jobs run on threads and report back over channels drained in `App::pump_jobs`.
 - `theme.rs` / `widgets.rs`: the black theme loads Segoe UI from `C:\Windows\Fonts` when available. It provides custom chips, a toggle, cards and `setting_row`.
 
 egui layout pitfalls already hit here:

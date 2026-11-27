@@ -1,15 +1,18 @@
-//! Reading and losslessly trimming MP4 clips (pure Rust, no Windows calls, so
-//! it is testable anywhere). Only H.264 video + AAC audio are supported, which
-//! covers ezclip's own clips and most other recorders' MP4s.
-use bytes::Bytes;
-use mp4::{MediaType, Mp4Reader, Mp4Sample, Mp4Track, TrackType};
-use std::io::{BufReader, BufWriter};
+//! Reading and losslessly trimming MP4 clips: any codec (H.264, HEVC, AV1,
+//! ...), any recorder. Pure Rust, no Windows calls, so it is testable anywhere.
+//!
+//! Trimming copies the samples it keeps and the codec description (`stsd`,
+//! e.g. avcC/hvcC/av1C) unchanged, and rebuilds only the timing tables, so
+//! it never needs to understand the codec itself.
+use crate::mp4w::{bx, cat, ftyp, mdat_header, mvhd, Track, TrackKind};
+use std::fs::File;
+use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 pub type Result<T> = std::result::Result<T, String>;
 
-fn err<E: std::fmt::Display>(what: &'static str) -> impl Fn(E) -> String {
-    move |e| format!("{what}: {e}")
+fn io<T>(what: &'static str, r: std::io::Result<T>) -> Result<T> {
+    r.map_err(|e| format!("{what}: {e}"))
 }
 
 /// What the trim editor needs to know about a clip.
@@ -17,56 +20,6 @@ pub struct ClipInfo {
     pub duration: f64,
     /// Times (seconds) where a trim may start without re-encoding.
     pub keyframes: Vec<f64>,
-}
-
-/// Decode-order timestamps (track timescale) of every sample, from `stts`.
-fn sample_times(track: &Mp4Track) -> (Vec<u64>, Vec<u32>) {
-    let mut times = Vec::with_capacity(track.sample_count() as usize);
-    let mut durs = Vec::with_capacity(track.sample_count() as usize);
-    let mut t = 0u64;
-    for e in &track.trak.mdia.minf.stbl.stts.entries {
-        for _ in 0..e.sample_count {
-            times.push(t);
-            durs.push(e.sample_delta);
-            t += e.sample_delta as u64;
-        }
-    }
-    (times, durs)
-}
-
-/// 0-based indices of sync (key) samples.
-fn sync_samples(track: &Mp4Track, count: usize) -> Vec<usize> {
-    match &track.trak.mdia.minf.stbl.stss {
-        Some(stss) => stss.entries.iter().map(|&n| n.saturating_sub(1) as usize).filter(|&i| i < count).collect(),
-        None => (0..count).collect(),
-    }
-}
-
-fn open(path: &Path) -> Result<Mp4Reader<BufReader<std::fs::File>>> {
-    let f = std::fs::File::open(path).map_err(err("open clip"))?;
-    let size = f.metadata().map_err(err("read clip"))?.len();
-    Mp4Reader::read_header(BufReader::new(f), size).map_err(err("not a readable MP4"))
-}
-
-fn find_tracks(r: &Mp4Reader<BufReader<std::fs::File>>) -> Result<(u32, Option<u32>)> {
-    let mut video = None;
-    let mut audio = None;
-    let mut ids: Vec<u32> = r.tracks().keys().copied().collect();
-    ids.sort();
-    for id in ids {
-        let t = &r.tracks()[&id];
-        match t.track_type() {
-            Ok(TrackType::Video) if video.is_none() => {
-                if !matches!(t.media_type(), Ok(MediaType::H264)) {
-                    return Err("only H.264 clips can be trimmed".into());
-                }
-                video = Some(id);
-            }
-            Ok(TrackType::Audio) if audio.is_none() && matches!(t.media_type(), Ok(MediaType::AAC)) => audio = Some(id),
-            _ => {}
-        }
-    }
-    Ok((video.ok_or("clip has no video track")?, audio))
 }
 
 /// Duration and video codec straight from the MP4 boxes. Cheap (reads only
@@ -85,9 +38,6 @@ impl QuickInfo {
             Some(b"av01") => "AV1",
             _ => "unknown",
         }
-    }
-    pub fn is_h264(&self) -> bool {
-        self.codec_name() == "H.264"
     }
 }
 
@@ -178,159 +128,294 @@ fn parse_moov(moov: &[u8]) -> Option<QuickInfo> {
     Some(QuickInfo { duration: if ts > 0.0 { dur / ts } else { 0.0 }, video_fourcc })
 }
 
-pub fn probe(path: &Path) -> Result<ClipInfo> {
-    if let Some(q) = quick_info(path) {
-        if q.video_fourcc.is_some() && !q.is_h264() {
-            return Err(format!(
-                "Trimming works on H.264 clips only, and this one is {}. Shrink for Discord still works on it.",
-                q.codec_name()
-            ));
+
+// ------------------------------------------------------- sample tables ---
+
+#[derive(PartialEq)]
+enum Kind {
+    Video { width: u32, height: u32 },
+    Audio,
+    Other,
+}
+
+/// One track of a source file, with every sample located.
+struct SrcTrack {
+    kind: Kind,
+    timescale: u32,
+    language: u16,
+    /// The whole `stsd` box, copied verbatim into the trimmed file.
+    stsd: Vec<u8>,
+    dts: Vec<u64>,
+    durs: Vec<u32>,
+    ctts: Option<Vec<i32>>,
+    /// `None` = every sample is a keyframe.
+    sync: Option<Vec<bool>>,
+    sizes: Vec<u32>,
+    offsets: Vec<u64>,
+}
+
+impl SrcTrack {
+    fn secs(&self, t: u64) -> f64 {
+        t as f64 / self.timescale.max(1) as f64
+    }
+    fn is_sync(&self, i: usize) -> bool {
+        self.sync.as_ref().map(|s| s[i]).unwrap_or(true)
+    }
+    fn end_secs(&self) -> f64 {
+        match (self.dts.last(), self.durs.last()) {
+            (Some(&d), Some(&l)) => self.secs(d + l as u64),
+            _ => 0.0,
         }
     }
-    let r = open(path)?;
-    let (vid, _) = find_tracks(&r)?;
-    let t = &r.tracks()[&vid];
-    let ts = t.timescale().max(1) as f64;
-    let (times, durs) = sample_times(t);
-    let keyframes = sync_samples(t, times.len()).into_iter().map(|i| times[i] as f64 / ts).collect();
-    let duration = times.last().map(|&l| (l + *durs.last().unwrap() as u64) as f64 / ts).unwrap_or(0.0);
-    Ok(ClipInfo { duration, keyframes })
+}
+
+fn be32(b: &[u8], at: usize) -> Option<u32> {
+    Some(u32::from_be_bytes(b.get(at..at + 4)?.try_into().ok()?))
+}
+fn be64(b: &[u8], at: usize) -> Option<u64> {
+    Some(u64::from_be_bytes(b.get(at..at + 8)?.try_into().ok()?))
+}
+
+/// Read the `moov` box of an MP4 (skipping `mdat`).
+fn read_moov(f: &mut File) -> Result<Vec<u8>> {
+    let len = io("read clip", f.metadata())?.len();
+    let mut pos = 0u64;
+    while pos + 8 <= len {
+        io("read clip", f.seek(SeekFrom::Start(pos)))?;
+        let mut h = [0u8; 16];
+        io("read clip", f.read_exact(&mut h[..8]))?;
+        let mut size = u32::from_be_bytes(h[..4].try_into().unwrap()) as u64;
+        let mut hdr = 8;
+        if size == 1 {
+            io("read clip", f.read_exact(&mut h[8..16]))?;
+            size = u64::from_be_bytes(h[8..16].try_into().unwrap());
+            hdr = 16;
+        } else if size == 0 {
+            size = len - pos;
+        }
+        if size < hdr || pos + size > len {
+            break;
+        }
+        if &h[4..8] == b"moov" {
+            if size > 512 << 20 {
+                return Err("clip index is too large".into());
+            }
+            let mut moov = vec![0u8; (size - hdr) as usize];
+            io("read clip", f.read_exact(&mut moov))?;
+            return Ok(moov);
+        }
+        pos += size;
+    }
+    Err("not a complete MP4 file (no index found; was it still being recorded?)".into())
+}
+
+fn parse_track(trak: &[u8]) -> Option<SrcTrack> {
+    let mdia = child(trak, b"mdia")?;
+    let mdhd = child(mdia, b"mdhd")?;
+    let (timescale, language) = if mdhd.first() == Some(&1) {
+        (be32(mdhd, 20)?, u16::from_be_bytes(mdhd.get(32..34)?.try_into().ok()?))
+    } else {
+        (be32(mdhd, 12)?, u16::from_be_bytes(mdhd.get(20..22)?.try_into().ok()?))
+    };
+    let handler = child(mdia, b"hdlr").and_then(|h| h.get(8..12))?;
+    let kind = match handler {
+        b"vide" => {
+            let tkhd = child(trak, b"tkhd")?;
+            let n = tkhd.len();
+            Kind::Video { width: be32(tkhd, n - 8)? >> 16, height: be32(tkhd, n - 4)? >> 16 }
+        }
+        b"soun" => Kind::Audio,
+        _ => Kind::Other,
+    };
+    let stbl = child(child(mdia, b"minf")?, b"stbl")?;
+    let stsd = bx(b"stsd", child(stbl, b"stsd")?);
+
+    // stts: decode times and durations
+    let stts = child(stbl, b"stts")?;
+    let (mut dts, mut durs) = (Vec::new(), Vec::new());
+    let mut t = 0u64;
+    for e in 0..be32(stts, 4)? as usize {
+        let (n, d) = (be32(stts, 8 + e * 8)?, be32(stts, 12 + e * 8)?);
+        for _ in 0..n {
+            dts.push(t);
+            durs.push(d);
+            t += d as u64;
+        }
+    }
+    let count = dts.len();
+
+    // stsz: sizes
+    let stsz = child(stbl, b"stsz")?;
+    let uniform = be32(stsz, 4)?;
+    let sizes: Vec<u32> = if uniform != 0 {
+        vec![uniform; count]
+    } else {
+        (0..count).map(|i| be32(stsz, 12 + i * 4)).collect::<Option<_>>()?
+    };
+
+    // stco / co64 + stsc: where each sample lives
+    let chunks: Vec<u64> = if let Some(co) = child(stbl, b"stco") {
+        (0..be32(co, 4)? as usize).map(|i| be32(co, 8 + i * 4).map(|v| v as u64)).collect::<Option<_>>()?
+    } else {
+        let co = child(stbl, b"co64")?;
+        (0..be32(co, 4)? as usize).map(|i| be64(co, 8 + i * 8)).collect::<Option<_>>()?
+    };
+    let stsc = child(stbl, b"stsc")?;
+    let runs: Vec<(u32, u32)> = (0..be32(stsc, 4)? as usize)
+        .map(|e| Some((be32(stsc, 8 + e * 12)?, be32(stsc, 12 + e * 12)?)))
+        .collect::<Option<_>>()?;
+    let mut offsets = Vec::with_capacity(count);
+    let mut run = 0;
+    for (c, &chunk_off) in chunks.iter().enumerate() {
+        while run + 1 < runs.len() && runs[run + 1].0 as usize <= c + 1 {
+            run += 1;
+        }
+        let per_chunk = runs.get(run).map(|r| r.1).unwrap_or(1);
+        let mut off = chunk_off;
+        for _ in 0..per_chunk {
+            if offsets.len() >= count {
+                break;
+            }
+            offsets.push(off);
+            off += sizes[offsets.len() - 1] as u64;
+        }
+    }
+    if offsets.len() != count || sizes.len() != count {
+        return None;
+    }
+
+    // ctts (B-frames) and stss (keyframes) are optional
+    let ctts = child(stbl, b"ctts").and_then(|b| {
+        let mut v = Vec::with_capacity(count);
+        for e in 0..be32(b, 4)? as usize {
+            let (n, o) = (be32(b, 8 + e * 8)?, be32(b, 12 + e * 8)? as i32);
+            v.extend(std::iter::repeat(o).take(n as usize));
+        }
+        v.resize(count, 0);
+        Some(v)
+    });
+    let sync = child(stbl, b"stss").and_then(|b| {
+        let mut v = vec![false; count];
+        for e in 0..be32(b, 4)? as usize {
+            if let Some(slot) = v.get_mut(be32(b, 8 + e * 4)?.saturating_sub(1) as usize) {
+                *slot = true;
+            }
+        }
+        Some(v)
+    });
+    Some(SrcTrack { kind, timescale, language, stsd, dts, durs, ctts, sync, sizes, offsets })
+}
+
+fn read_tracks(f: &mut File) -> Result<Vec<SrcTrack>> {
+    let moov = read_moov(f)?;
+    if child(&moov, b"mvex").is_some() {
+        return Err("fragmented MP4s can't be trimmed".into());
+    }
+    Ok(children(&moov).into_iter().filter(|(k, _)| k == b"trak").filter_map(|(_, t)| parse_track(t)).collect())
+}
+
+fn video_track(tracks: &[SrcTrack]) -> Result<&SrcTrack> {
+    tracks
+        .iter()
+        .find(|t| matches!(t.kind, Kind::Video { .. }) && !t.dts.is_empty())
+        .ok_or_else(|| "clip has no video".to_string())
+}
+
+pub fn probe(path: &Path) -> Result<ClipInfo> {
+    let mut f = io("open clip", File::open(path))?;
+    let tracks = read_tracks(&mut f)?;
+    let v = video_track(&tracks)?;
+    let keyframes = (0..v.dts.len()).filter(|&i| v.is_sync(i)).map(|i| v.secs(v.dts[i])).collect();
+    Ok(ClipInfo { duration: v.end_secs(), keyframes })
 }
 
 /// Keyframe-accurate lossless cut: the result starts at the last keyframe at
-/// or before `start` and ends just before `end` (seconds). Returns the new
-/// duration in seconds.
+/// or before `start` and ends just before `end` (seconds). `dst` may equal
+/// `src` (trim in place). Returns the new duration in seconds.
 pub fn trim(src: &Path, dst: &Path, start: f64, end: f64) -> Result<f64> {
-    let mut r = open(src)?;
-    let (vid, aid) = find_tracks(&r)?;
+    let mut f = io("open clip", File::open(src))?;
+    let tracks = read_tracks(&mut f)?;
+    let v = video_track(&tracks)?;
 
-    let (vconf, vts, vtimes, vdurs, vsync) = {
-        let t = &r.tracks()[&vid];
-        let (times, durs) = sample_times(t);
-        let sync = sync_samples(t, times.len());
-        let conf = mp4::AvcConfig {
-            width: t.width(),
-            height: t.height(),
-            seq_param_set: t.sequence_parameter_set().map_err(err("video config"))?.to_vec(),
-            pic_param_set: t.picture_parameter_set().map_err(err("video config"))?.to_vec(),
-        };
-        (conf, t.timescale().max(1), times, durs, sync)
-    };
-    if vtimes.is_empty() {
-        return Err("clip has no video".into());
-    }
-    let to_ts = |s: f64, ts: u32| (s.max(0.0) * ts as f64).round() as u64;
+    // Video range: from the keyframe at/before `start` up to `end`.
+    let first = (0..v.dts.len()).filter(|&i| v.is_sync(i) && v.secs(v.dts[i]) <= start + 1e-6).last().unwrap_or(0);
+    let last_excl = (0..v.dts.len()).find(|&i| v.secs(v.dts[i]) >= end - 1e-6).unwrap_or(v.dts.len()).max(first + 1);
+    let base_sec = v.secs(v.dts[first]);
+    let end_sec = v.dts.get(last_excl).map(|&t| v.secs(t)).unwrap_or(f64::MAX);
 
-    let start_t = to_ts(start, vts);
-    let end_t = to_ts(end, vts);
-    let first = vsync.iter().copied().filter(|&i| vtimes[i] <= start_t).last().unwrap_or(vsync.first().copied().unwrap_or(0));
-    let last_excl = vtimes.iter().position(|&t| t >= end_t).unwrap_or(vtimes.len()).max(first + 1);
-    let base_v = vtimes[first];
-    let base_sec = base_v as f64 / vts as f64;
-    let end_sec = vtimes.get(last_excl).map(|&t| t as f64 / vts as f64).unwrap_or(f64::MAX);
+    // Keep the video track and every audio track, each cut to the same window.
+    let kept: Vec<(&SrcTrack, std::ops::Range<usize>)> = std::iter::once((v, first..last_excl))
+        .chain(tracks.iter().filter(|t| t.kind == Kind::Audio).map(|t| {
+            let a0 = (0..t.dts.len()).find(|&i| t.secs(t.dts[i]) >= base_sec - 1e-6).unwrap_or(t.dts.len());
+            let a1 = (0..t.dts.len()).find(|&i| t.secs(t.dts[i]) >= end_sec - 1e-6).unwrap_or(t.dts.len());
+            (t, a0..a1.max(a0))
+        }))
+        .collect();
 
-    let audio = match aid {
-        Some(id) => {
-            let t = &r.tracks()[&id];
-            let conf = mp4::AacConfig {
-                bitrate: t.bitrate(),
-                profile: t.audio_profile().map_err(err("audio config"))?,
-                freq_index: t.sample_freq_index().map_err(err("audio config"))?,
-                chan_conf: t.channel_config().map_err(err("audio config"))?,
-            };
-            let ts = t.timescale().max(1);
-            let (times, durs) = sample_times(t);
-            let a0 = times.iter().position(|&x| x as f64 / ts as f64 >= base_sec).unwrap_or(times.len());
-            let a1 = times.iter().position(|&x| x as f64 / ts as f64 >= end_sec).unwrap_or(times.len());
-            Some((id, conf, ts, times, durs, a0, a1))
-        }
-        None => None,
-    };
+    // Write order: interleaved by time (video first on ties).
+    let mut order: Vec<(f64, usize, usize)> =
+        kept.iter().enumerate().flat_map(|(ti, (t, r))| r.clone().map(move |i| (t.secs(t.dts[i]), ti, i))).collect();
+    order.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
 
     let tmp = dst.with_extension("mp4.part");
-    let file = std::fs::File::create(&tmp).map_err(err("create file"))?;
     let result = (|| -> Result<f64> {
-        let config = mp4::Mp4Config {
-            major_brand: str::parse("isom").unwrap(),
-            minor_version: 512,
-            compatible_brands: ["isom", "iso2", "avc1", "mp41"].iter().map(|b| str::parse(b).unwrap()).collect(),
-            timescale: 1000,
-        };
-        let mut w = mp4::Mp4Writer::write_start(BufWriter::with_capacity(1 << 20, file), &config).map_err(err("mp4 start"))?;
-        w.add_track(&mp4::TrackConfig {
-            track_type: TrackType::Video,
-            timescale: vts,
-            language: "und".into(),
-            media_conf: mp4::MediaConfig::AvcConfig(vconf),
-        })
-        .map_err(err("video track"))?;
-        if let Some((_, conf, ts, ..)) = &audio {
-            w.add_track(&mp4::TrackConfig {
-                track_type: TrackType::Audio,
-                timescale: *ts,
-                language: "und".into(),
-                media_conf: mp4::MediaConfig::AacConfig(conf.clone()),
+        let mut w = BufWriter::with_capacity(1 << 20, io("create file", File::create(&tmp))?);
+        let ftyp = ftyp(&[b"isom", b"iso2", b"mp41"]);
+        io("write", w.write_all(&ftyp))?;
+        let mdat_start = ftyp.len() as u64;
+        io("write", w.write_all(&mdat_header()))?;
+        let mut pos = mdat_start + 16;
+
+        let mut out: Vec<Track> = kept
+            .iter()
+            .map(|(t, _)| Track {
+                sync: t.sync.as_ref().map(|_| Vec::new()),
+                ctts: t.ctts.as_ref().map(|_| Vec::new()),
+                ..Default::default()
             })
-            .map_err(err("audio track"))?;
+            .collect();
+        let mut buf = Vec::new();
+        for &(_, ti, i) in &order {
+            let t = kept[ti].0;
+            buf.resize(t.sizes[i] as usize, 0);
+            io("read clip", f.seek(SeekFrom::Start(t.offsets[i])))?;
+            io("read clip", f.read_exact(&mut buf))?;
+            io("write", w.write_all(&buf))?;
+            let o = &mut out[ti];
+            o.push(pos, t.sizes[i], t.durs[i]);
+            if let (Some(s), true) = (o.sync.as_mut(), t.is_sync(i)) {
+                s.push(o.sizes.len() as u32);
+            }
+            if let (Some(c), Some(src)) = (o.ctts.as_mut(), t.ctts.as_ref()) {
+                c.push(src[i]);
+            }
+            pos += t.sizes[i] as u64;
         }
 
-        // Interleave by time, like the recorder's muxer.
-        let mut vi = first;
-        let mut ai = audio.as_ref().map(|a| a.5).unwrap_or(0);
-        loop {
-            let v_sec = (vi < last_excl).then(|| vtimes[vi] as f64 / vts as f64);
-            let a_sec = audio.as_ref().and_then(|a| (ai < a.6).then(|| a.3[ai] as f64 / a.2 as f64));
-            let take_video = match (v_sec, a_sec) {
-                (Some(v), Some(a)) => v <= a,
-                (Some(_), None) => true,
-                (None, Some(_)) => false,
-                (None, None) => break,
+        let ms = |t: &SrcTrack, o: &Track| (o.duration() * 1000 / t.timescale.max(1) as u64) as u32;
+        let movie_ms = kept.iter().zip(&out).map(|((t, _), o)| ms(t, o)).max().unwrap_or(0);
+        let mut moov = vec![mvhd(movie_ms, kept.len() as u32 + 1)];
+        for (n, ((t, _), o)) in kept.iter().zip(&out).enumerate() {
+            let kind = match t.kind {
+                Kind::Video { width, height } => TrackKind::Video { width, height },
+                _ => TrackKind::Audio,
             };
-            if take_video {
-                let s = r.read_sample(vid, vi as u32 + 1).map_err(err("read video"))?.ok_or("missing video sample")?;
-                w.write_sample(
-                    1,
-                    &Mp4Sample {
-                        start_time: vtimes[vi] - base_v,
-                        duration: vdurs[vi],
-                        rendering_offset: s.rendering_offset,
-                        is_sync: s.is_sync,
-                        bytes: Bytes::from(s.bytes.to_vec()),
-                    },
-                )
-                .map_err(err("write video"))?;
-                vi += 1;
-            } else {
-                let (id, _, ts, times, durs, a0, _) = audio.as_ref().unwrap();
-                let base_a = (base_sec * *ts as f64).round() as u64;
-                let s = r.read_sample(*id, ai as u32 + 1).map_err(err("read audio"))?.ok_or("missing audio sample")?;
-                let _ = a0;
-                w.write_sample(
-                    2,
-                    &Mp4Sample {
-                        start_time: times[ai].saturating_sub(base_a),
-                        duration: durs[ai],
-                        rendering_offset: 0,
-                        is_sync: true,
-                        bytes: Bytes::from(s.bytes.to_vec()),
-                    },
-                )
-                .map_err(err("write audio"))?;
-                ai += 1;
-            }
+            moov.push(o.trak(n as u32 + 1, t.timescale, ms(t, o), kind, t.stsd.clone(), t.language));
         }
-        w.write_end().map_err(err("finish mp4"))?;
-        let last = last_excl - 1;
-        Ok((vtimes[last] + vdurs[last] as u64 - base_v) as f64 / vts as f64)
+        io("write", w.write_all(&bx(b"moov", &cat(&moov))))?;
+        io("write", w.seek(SeekFrom::Start(mdat_start + 8)))?;
+        io("write", w.write_all(&(pos - mdat_start).to_be_bytes()))?;
+        io("write", w.flush())?;
+        Ok(out[0].duration() as f64 / v.timescale.max(1) as f64)
     })();
     // Close the source before replacing it (trimming in place).
-    drop(r);
+    drop(f);
     match result {
         Ok(d) => {
             if dst.exists() {
-                std::fs::remove_file(dst).map_err(err("replace clip"))?;
+                io("replace clip", std::fs::remove_file(dst))?;
             }
-            std::fs::rename(&tmp, dst).map_err(err("save clip"))?;
+            io("save clip", std::fs::rename(&tmp, dst))?;
             Ok(d)
         }
         Err(e) => {

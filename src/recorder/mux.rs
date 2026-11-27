@@ -5,6 +5,7 @@
 //! This is a small, purpose-built MP4 writer: one video track, one optional
 //! AAC track, samples interleaved by time, `moov` at the end.
 use super::buffer::{nal_units, obus, Snapshot, VideoCodec, TICKS};
+use crate::mp4w::{bx, cat, ftyp, full, mdat_header, mvhd, stsd, Track, TrackKind, W};
 use std::fs::File;
 use std::io::{BufWriter, Seek, SeekFrom, Write};
 use std::path::Path;
@@ -17,68 +18,6 @@ pub const AAC_FRAME: i64 = 1024;
 
 fn io<T>(r: std::io::Result<T>) -> Result<T> {
     r.map_err(|e| e.to_string())
-}
-
-// ------------------------------------------------------------ box helpers ---
-
-fn bx(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
-    let mut v = Vec::with_capacity(body.len() + 8);
-    v.extend_from_slice(&((body.len() + 8) as u32).to_be_bytes());
-    v.extend_from_slice(kind);
-    v.extend_from_slice(body);
-    v
-}
-
-fn full(kind: &[u8; 4], version: u8, flags: u32, body: &[u8]) -> Vec<u8> {
-    let mut b = Vec::with_capacity(body.len() + 4);
-    b.push(version);
-    b.extend_from_slice(&flags.to_be_bytes()[1..]);
-    b.extend_from_slice(body);
-    bx(kind, &b)
-}
-
-fn cat(parts: &[Vec<u8>]) -> Vec<u8> {
-    parts.concat()
-}
-
-struct W(Vec<u8>);
-impl W {
-    fn new() -> Self {
-        W(Vec::new())
-    }
-    fn u8(mut self, v: u8) -> Self {
-        self.0.push(v);
-        self
-    }
-    fn u16(mut self, v: u16) -> Self {
-        self.0.extend_from_slice(&v.to_be_bytes());
-        self
-    }
-    fn u32(mut self, v: u32) -> Self {
-        self.0.extend_from_slice(&v.to_be_bytes());
-        self
-    }
-    fn u64(mut self, v: u64) -> Self {
-        self.0.extend_from_slice(&v.to_be_bytes());
-        self
-    }
-    fn bytes(mut self, b: &[u8]) -> Self {
-        self.0.extend_from_slice(b);
-        self
-    }
-    fn zeros(mut self, n: usize) -> Self {
-        self.0.resize(self.0.len() + n, 0);
-        self
-    }
-}
-
-const MATRIX: [u32; 9] = [0x0001_0000, 0, 0, 0, 0x0001_0000, 0, 0, 0, 0x4000_0000];
-
-fn matrix(mut w: W) -> W {
-    for m in MATRIX {
-        w = w.u32(m);
-    }
-    w
 }
 
 // ----------------------------------------------------- codec config boxes ---
@@ -323,104 +262,6 @@ fn sample_bytes(codec: VideoCodec, data: &[u8]) -> Vec<u8> {
     out
 }
 
-// ------------------------------------------------------------------ track ---
-
-#[derive(Default)]
-struct Track {
-    durations: Vec<u32>,
-    sizes: Vec<u32>,
-    offsets: Vec<u64>,
-    /// 1-based sample numbers of keyframes.
-    sync: Vec<u32>,
-}
-
-impl Track {
-    fn duration(&self) -> u64 {
-        self.durations.iter().map(|&d| d as u64).sum()
-    }
-
-    fn stbl(&self, stsd_entry: Vec<u8>, video: bool) -> Vec<u8> {
-        let stsd = full(b"stsd", 0, 0, &cat(&[W::new().u32(1).0, stsd_entry]));
-        // stts: run-length of durations
-        let mut runs: Vec<(u32, u32)> = Vec::new();
-        for &d in &self.durations {
-            match runs.last_mut() {
-                Some((n, dd)) if *dd == d => *n += 1,
-                _ => runs.push((1, d)),
-            }
-        }
-        let mut w = W::new().u32(runs.len() as u32);
-        for (n, d) in runs {
-            w = w.u32(n).u32(d);
-        }
-        let stts = full(b"stts", 0, 0, &w.0);
-        // one sample per chunk keeps stsc trivial
-        let stsc = full(b"stsc", 0, 0, &W::new().u32(1).u32(1).u32(1).u32(1).0);
-        let mut w = W::new().u32(0).u32(self.sizes.len() as u32);
-        for &s in &self.sizes {
-            w = w.u32(s);
-        }
-        let stsz = full(b"stsz", 0, 0, &w.0);
-        let co = if self.offsets.iter().any(|&o| o > u32::MAX as u64) {
-            let mut w = W::new().u32(self.offsets.len() as u32);
-            for &o in &self.offsets {
-                w = w.u64(o);
-            }
-            full(b"co64", 0, 0, &w.0)
-        } else {
-            let mut w = W::new().u32(self.offsets.len() as u32);
-            for &o in &self.offsets {
-                w = w.u32(o as u32);
-            }
-            full(b"stco", 0, 0, &w.0)
-        };
-        let mut parts = vec![stsd, stts];
-        if video {
-            let mut w = W::new().u32(self.sync.len() as u32);
-            for &s in &self.sync {
-                w = w.u32(s);
-            }
-            parts.push(full(b"stss", 0, 0, &w.0));
-        }
-        parts.extend([stsc, stsz, co]);
-        bx(b"stbl", &cat(&parts))
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn trak(&self, id: u32, timescale: u32, movie_duration_ms: u32, video: bool, w: u32, h: u32, entry: Vec<u8>) -> Vec<u8> {
-        let tkhd = full(
-            b"tkhd",
-            0,
-            3, // enabled, in movie
-            &matrix(
-                W::new()
-                    .u32(0)
-                    .u32(0)
-                    .u32(id)
-                    .u32(0)
-                    .u32(movie_duration_ms)
-                    .zeros(8)
-                    .u16(0)
-                    .u16(if video { 0 } else { 1 })
-                    .u16(if video { 0 } else { 0x0100 })
-                    .u16(0),
-            )
-            .u32(if video { w << 16 } else { 0 })
-            .u32(if video { h << 16 } else { 0 })
-            .0,
-        );
-        let mdhd = full(b"mdhd", 0, 0, &W::new().u32(0).u32(0).u32(timescale).u32(self.duration() as u32).u16(0x55C4).u16(0).0);
-        let (handler, name): (&[u8; 4], &[u8]) = if video { (b"vide", b"VideoHandler\0") } else { (b"soun", b"SoundHandler\0") };
-        let hdlr = full(b"hdlr", 0, 0, &W::new().u32(0).bytes(handler).zeros(12).bytes(name).0);
-        let xmhd = if video { full(b"vmhd", 0, 1, &[0; 8]) } else { full(b"smhd", 0, 0, &[0; 4]) };
-        let dref = full(b"dref", 0, 0, &cat(&[W::new().u32(1).0, full(b"url ", 0, 1, &[])]));
-        let dinf = bx(b"dinf", &dref);
-        let minf = bx(b"minf", &cat(&[xmhd, dinf, self.stbl(entry, video)]));
-        let mdia = bx(b"mdia", &cat(&[mdhd, hdlr, minf]));
-        bx(b"trak", &cat(&[tkhd, mdia]))
-    }
-}
-
 // ------------------------------------------------------------------ write ---
 
 /// Returns the clip duration in seconds.
@@ -435,19 +276,18 @@ pub fn write_mp4(path: &Path, snap: &Snapshot) -> Result<f64> {
     };
 
     let mut f = BufWriter::with_capacity(1 << 20, io(File::create(path))?);
-    let brands: Vec<u8> = [&b"isom"[..], &b"iso2"[..], &fourcc[..], &b"mp41"[..]].concat();
-    let ftyp = bx(b"ftyp", &W::new().bytes(b"isom").u32(512).bytes(&brands).0);
+    let ftyp = ftyp(&[b"isom", b"iso2", fourcc, b"mp41"]);
     io(f.write_all(&ftyp))?;
     // 64-bit mdat header; the size is filled in at the end.
     let mdat_start = ftyp.len() as u64;
-    io(f.write_all(&W::new().u32(1).bytes(b"mdat").u64(0).0))?;
+    io(f.write_all(&mdat_header()))?;
     let mut pos = mdat_start + 16;
 
     let t0 = snap.video[0].pts;
     let vt = |pts: i64| ((pts - t0).max(0) * VIDEO_TS as i64 + TICKS / 2) / TICKS;
     let frame = (VIDEO_TS as i64 / snap.fps.max(1) as i64).max(1);
 
-    let mut video = Track::default();
+    let mut video = Track { sync: Some(Vec::new()), ..Default::default() };
     let mut audio = Track::default();
     let (mut vi, mut ai) = (0usize, 0usize);
     let (n_v, n_a) = (snap.video.len(), snap.audio.len());
@@ -466,20 +306,16 @@ pub fn write_mp4(path: &Path, snap: &Snapshot) -> Result<f64> {
             let start = vt(p.pts);
             let next = snap.video.get(vi + 1).map(|n| vt(n.pts)).unwrap_or(start + frame);
             io(f.write_all(&data))?;
-            video.offsets.push(pos);
-            video.sizes.push(data.len() as u32);
-            video.durations.push((next - start).max(1) as u32);
+            video.push(pos, data.len() as u32, (next - start).max(1) as u32);
             if p.key {
-                video.sync.push(vi as u32 + 1);
+                video.sync.as_mut().unwrap().push(vi as u32 + 1);
             }
             pos += data.len() as u64;
             vi += 1;
         } else {
             let p = &snap.audio[ai];
             io(f.write_all(&p.data))?;
-            audio.offsets.push(pos);
-            audio.sizes.push(p.data.len() as u32);
-            audio.durations.push(AAC_FRAME as u32);
+            audio.push(pos, p.data.len() as u32, AAC_FRAME as u32);
             pos += p.data.len() as u64;
             ai += 1;
         }
@@ -487,20 +323,12 @@ pub fn write_mp4(path: &Path, snap: &Snapshot) -> Result<f64> {
 
     let v_ms = (video.duration() * 1000 / VIDEO_TS as u64) as u32;
     let a_ms = (audio.duration() * 1000 / AUDIO_RATE as u64) as u32;
-    let movie_ms = v_ms.max(a_ms);
     let has_audio = !audio.sizes.is_empty();
-    let mvhd = full(
-        b"mvhd",
-        0,
-        0,
-        &matrix(W::new().u32(0).u32(0).u32(1000).u32(movie_ms).u32(0x0001_0000).u16(0x0100).zeros(10))
-            .zeros(24)
-            .u32(if has_audio { 3 } else { 2 })
-            .0,
-    );
-    let mut moov = vec![mvhd, video.trak(1, VIDEO_TS, v_ms, true, snap.width, snap.height, visual_entry(fourcc, snap.width, snap.height, config))];
+    let video_kind = TrackKind::Video { width: snap.width, height: snap.height };
+    let video_stsd = stsd(visual_entry(fourcc, snap.width, snap.height, config));
+    let mut moov = vec![mvhd(v_ms.max(a_ms), if has_audio { 3 } else { 2 }), video.trak(1, VIDEO_TS, v_ms, video_kind, video_stsd, 0x55C4)];
     if has_audio {
-        moov.push(audio.trak(2, AUDIO_RATE, a_ms, false, 0, 0, mp4a_entry()));
+        moov.push(audio.trak(2, AUDIO_RATE, a_ms, TrackKind::Audio, stsd(mp4a_entry()), 0x55C4));
     }
     io(f.write_all(&bx(b"moov", &cat(&moov))))?;
 

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.2
+
+- **Trim now works on HEVC and AV1 clips too.** In fact it works on any MP4, whatever
+  codec or recorder made it: clips with B-frames (e.g. from OBS) and multiple audio
+  tracks are kept intact. It's still lossless and instant. The kept frames and the
+  codec description are copied over unchanged.
+- The trim editor explains when Windows can't show a preview of a clip (HEVC/AV1
+  without Microsoft's video extensions) instead of showing a black box. Trimming
+  still works in that case.
+- Under the hood: ezclip now reads and writes MP4 files entirely with its own code
+  (no third-party MP4 library), shared by saving and trimming.
+
 ## 0.4.1
 
 - **Play clips inside the trim editor**, with picture and sound.
