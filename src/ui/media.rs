@@ -384,7 +384,7 @@ fn shrink_blocking(src: &Path, limit: u64, progress: &dyn Fn(f32)) -> std::resul
                 let _ = std::fs::remove_file(&dst);
             }
             std::fs::rename(&tmp, &dst).map_err(|e| e.to_string())?;
-            crate::clipmeta::mark_ezclip(&dst);
+            crate::clipmeta::mark_shear(&dst);
             return Ok(dst);
         }
         // Encoder overshot: aim lower in proportion and try again.

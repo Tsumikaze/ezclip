@@ -1,13 +1,13 @@
-# ezclip
+# Shear
 
-[![build](https://github.com/Tsumikaze/ezclip/actions/workflows/build.yml/badge.svg)](https://github.com/Tsumikaze/ezclip/actions/workflows/build.yml)
-[![release](https://img.shields.io/github/v/release/Tsumikaze/ezclip)](https://github.com/Tsumikaze/ezclip/releases/latest)
+[![build](https://github.com/Tsumikaze/shear/actions/workflows/build.yml/badge.svg)](https://github.com/Tsumikaze/shear/actions/workflows/build.yml)
+[![release](https://img.shields.io/github/v/release/Tsumikaze/shear)](https://github.com/Tsumikaze/shear/releases/latest)
 
-**Download:** [latest release](https://github.com/Tsumikaze/ezclip/releases/latest) ·
+**Download:** [latest release](https://github.com/Tsumikaze/shear/releases/latest) ·
 **Status & roadmap:** [docs/ROADMAP.md](docs/ROADMAP.md) ·
 **Changes:** [CHANGELOG.md](CHANGELOG.md)
 
-Fast, simple clipping for Windows. ezclip quietly keeps the last few seconds of
+Fast, simple clipping for Windows. Shear quietly keeps the last few seconds of
 your screen **and audio** in memory. Press a hotkey and they're saved as an MP4.
 
 - **Alt + F10** saves the last 30 seconds (both are configurable). Press again within 10 s to make that clip longer
@@ -21,12 +21,12 @@ your screen **and audio** in memory. Press a hotkey and they're saved as an MP4.
 
 ## Install
 
-1. Download `ezclip.exe` from the [latest release](https://github.com/Tsumikaze/ezclip/releases/latest)
-   and put it somewhere permanent, e.g. `C:\Program Files\ezclip\ezclip.exe`.
+1. Download `shear.exe` from the [latest release](https://github.com/Tsumikaze/shear/releases/latest)
+   and put it somewhere permanent, e.g. `C:\Program Files\Shear\shear.exe`.
 2. Double-click it. The window opens and a ◉ icon appears in the tray.
    That's it: the replay buffer is now running.
 
-ezclip turns on *Start with Windows* the first time it runs. You can switch it off
+Shear turns on *Start with Windows* the first time it runs. You can switch it off
 in **Settings → General**. If you move the exe later, toggle it off and on again.
 
 ## Use
@@ -44,7 +44,7 @@ in **Settings → General**. If you move the exe later, toggle it off and on aga
 | Change hotkey / length / quality | **Settings**. Changes apply instantly |
 | Quit | Right-click the tray icon → *Quit* |
 
-Clips are saved to `Videos\ezclip` by default. Change it in **Settings → Saving**:
+Clips are saved to `Videos\Shear` by default. Change it in **Settings → Saving**:
 type a path (e.g. `E:\videos`) or browse. With *Sort into game folders* on, each clip
 goes into the subfolder matching the game you're in (`E:\videos\Valorant`, `E:\videos\Counter-Strike 2`, ...).
 Existing folders are matched automatically. New games get a folder of their own, and
@@ -65,7 +65,7 @@ notifications on. The tray icon's dot shows the state: **red** = recording,
 - **Audio**: system audio and/or microphone (mixed into one track). Pick which mic, set its volume, and watch the live level meter to check it works
 - **Sharing**: your Discord upload limit (10 / 50 / 500 MB presets, or any custom size). *Copy* and *Shrink for Discord* fit clips to it
 - **Cleanup** (off by default): keep clips under a size limit and/or delete clips older
-  than N days, oldest first. Only clips made by ezclip are touched (older videos from
+  than N days, oldest first. Only clips made by Shear are touched (older videos from
   other recorders are safe) and favourites are always kept. The page shows what would be
   removed before you switch it on.
 
@@ -88,9 +88,9 @@ Hotkey ─► copy buffer ─► MP4 (no re-encoding, ~50 ms for a 30 s clip)
 
 ## Updating
 
-ezclip can update itself: **Settings → General → Updates → Check for updates**, or click the
+Shear can update itself: **Settings → General → Updates → Check for updates**, or click the
 green **Update to vX** button that appears in the sidebar when a new version is out. It
-downloads `ezclip.exe` from this repository's releases, verifies its SHA-256, swaps it in and
+downloads `shear.exe` from this repository's releases, verifies its SHA-256, swaps it in and
 restarts. (Versions before 0.5.0 must be updated by hand once.)
 
 ## Troubleshooting
@@ -99,7 +99,7 @@ restarts. (Versions before 0.5.0 must be updated by hand once.)
   talk: the level bar should move. If it says *blocked by Windows privacy settings*, click
   **Open privacy settings** and turn on *Let desktop apps access your microphone*.
 
-- **Settings → General → Logs** opens `%APPDATA%\ezclip`, which contains `recorder.log` and `ui.log`.
+- **Settings → General → Logs** opens `%APPDATA%\shear`, which contains `recorder.log` and `ui.log`.
 - *Hotkey is used by another app*: pick a different one in Settings
   (AMD Adrenalin and GeForce Experience use some Alt+F-keys).
 - If the sidebar says *CPU encoder*, Windows couldn't open your GPU's encoder.
@@ -113,7 +113,7 @@ restarts. (Versions before 0.5.0 must be updated by hand once.)
 Requires Rust (stable).
 
 ```
-cargo build --release          # on Windows → target\release\ezclip.exe
+cargo build --release          # on Windows → target\release\shear.exe
 ```
 
 Cross-compiling from Linux also works:

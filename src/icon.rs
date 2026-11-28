@@ -1,51 +1,93 @@
-//! The app icon, drawn procedurally: white ring with a coloured dot on black.
-//! The dot shows the recorder's state in the tray.
+//! The Shear logo, drawn procedurally: an open pair of classic scissors.
+//! * `logo_rgba`: solid white (sidebar logo).
+//! * `app_icon_rgba`: white with a black outline on a transparent background
+//!   (exe, window, taskbar and tray icon; `build.rs` turns it into the .ico).
+//!
+//! Shapes are signed distance fields in a unit square (y down), so every size
+//! from 16 px to 256 px is drawn crisply with anti-aliased edges.
+
+/// Recorder state, shown in the tray tooltip.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum State {
-    /// Replay buffer running (red "record" dot).
     Recording,
-    /// Starting up (grey dot, dimmed ring).
     Starting,
-    /// Something is wrong (amber dot).
     Problem,
 }
 
-pub fn rgba(size: u32) -> Vec<u8> {
-    rgba_state(size, State::Recording)
+type P = (f32, f32);
+
+fn len(x: f32, y: f32) -> f32 {
+    (x * x + y * y).sqrt()
 }
 
-pub fn rgba_state(size: u32, state: State) -> Vec<u8> {
-    let (dot_rgb, ring_level) = match state {
-        State::Recording => ([1.0, 0.23, 0.27], 1.0),
-        State::Starting => ([0.45, 0.45, 0.45], 0.55),
-        State::Problem => ([1.0, 0.72, 0.25], 1.0),
-    };
-    let mut px = vec![0u8; (size * size * 4) as usize];
+/// Distance to a capsule from `a` (radius `ra`) to `b` (radius `rb`).
+fn taper(p: P, a: P, b: P, ra: f32, rb: f32) -> f32 {
+    let (pax, pay) = (p.0 - a.0, p.1 - a.1);
+    let (bax, bay) = (b.0 - a.0, b.1 - a.1);
+    let h = ((pax * bax + pay * bay) / (bax * bax + bay * bay)).clamp(0.0, 1.0);
+    len(pax - bax * h, pay - bay * h) - (ra + (rb - ra) * h)
+}
+
+fn circle(p: P, c: P, r: f32) -> f32 {
+    len(p.0 - c.0, p.1 - c.1) - r
+}
+
+/// Negative inside the scissors, positive outside (unit-square coordinates).
+fn scissors(p: P) -> f32 {
+    let pivot = (0.5, 0.47);
+    let tip_l = (0.17, 0.05);
+    let tip_r = (0.83, 0.05);
+    // Each blade continues through the pivot to the handle on the other side.
+    let ring_l = (0.285, 0.775);
+    let ring_r = (0.715, 0.775);
+    let (ring_outer, ring_inner) = (0.165, 0.098);
+
+    let blades = taper(p, pivot, tip_l, 0.072, 0.010).min(taper(p, pivot, tip_r, 0.072, 0.010));
+    let shanks = taper(p, pivot, ring_r, 0.05, 0.045).min(taper(p, pivot, ring_l, 0.05, 0.045));
+    let rings = circle(p, ring_l, ring_outer).min(circle(p, ring_r, ring_outer));
+    let mut d = blades.min(shanks).min(rings);
+    // Finger holes and the pivot screw are cut out.
+    d = d.max(-circle(p, ring_l, ring_inner)).max(-circle(p, ring_r, ring_inner));
+    d.max(-circle(p, pivot, 0.026))
+}
+
+/// Coverage of a pixel for a distance in pixels (anti-aliased edge).
+fn cover(d_px: f32) -> f32 {
+    (0.5 - d_px).clamp(0.0, 1.0)
+}
+
+/// Solid white scissors on transparent (RGBA, straight alpha).
+pub fn logo_rgba(size: u32) -> Vec<u8> {
     let s = size as f32;
-    let c = s / 2.0;
-    let corner = s * 0.22;
-    // Small tray icons need thicker strokes to stay readable.
-    let ring_half = if size <= 24 { 0.06 } else { 0.045 };
-    let dot_r = if size <= 24 { 0.21 } else { 0.19 };
+    let mut px = vec![0u8; (size * size * 4) as usize];
     for y in 0..size {
         for x in 0..size {
-            let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
-            let qx = (fx - c).abs() - (c - corner);
-            let qy = (fy - c).abs() - (c - corner);
-            let outside = (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt() + qx.max(qy).min(0.0) - corner;
-            let bg = (0.5 - outside).clamp(0.0, 1.0);
-            let d = ((fx - c).powi(2) + (fy - c).powi(2)).sqrt() / s;
-            let ring = (1.0 - ((d - 0.33).abs() - ring_half) * s).clamp(0.0, 1.0) * ring_level;
-            let dot = (1.0 - (d - dot_r) * s).clamp(0.0, 1.0);
-            let mut col = [ring, ring, ring];
-            for k in 0..3 {
-                col[k] = col[k] * (1.0 - dot) + dot_rgb[k] * dot;
-            }
+            let d = scissors(((x as f32 + 0.5) / s, (y as f32 + 0.5) / s)) * s;
             let i = ((y * size + x) * 4) as usize;
-            px[i] = (col[0] * 255.0) as u8;
-            px[i + 1] = (col[1] * 255.0) as u8;
-            px[i + 2] = (col[2] * 255.0) as u8;
-            px[i + 3] = (bg * 255.0) as u8;
+            px[i..i + 3].copy_from_slice(&[255, 255, 255]);
+            px[i + 3] = (cover(d) * 255.0) as u8;
+        }
+    }
+    px
+}
+
+/// White scissors with a black outline on transparent (RGBA, straight alpha).
+pub fn app_icon_rgba(size: u32) -> Vec<u8> {
+    let s = size as f32;
+    // Outline: ~4.5 % of the icon, at least ~1.2 px so it shows at 16 px.
+    let outline = (0.045 * s).max(1.2);
+    let mut px = vec![0u8; (size * size * 4) as usize];
+    for y in 0..size {
+        for x in 0..size {
+            let d = scissors(((x as f32 + 0.5) / s, (y as f32 + 0.5) / s)) * s;
+            let inner = cover(d);
+            let outer = cover(d - outline);
+            let i = ((y * size + x) * 4) as usize;
+            // White where inside, black in the outline band.
+            let white = if outer > 0.0 { (inner / outer).min(1.0) } else { 0.0 };
+            let v = (white * 255.0) as u8;
+            px[i..i + 3].copy_from_slice(&[v, v, v]);
+            px[i + 3] = (outer * 255.0) as u8;
         }
     }
     px

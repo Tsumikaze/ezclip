@@ -1,14 +1,16 @@
 //! Per-clip flags stored with the file itself:
 //! * "favourite": never removed by auto-cleanup.
-//! * "made by ezclip": auto-cleanup only ever considers these.
+//! * "made by shear": auto-cleanup only ever considers these.
 //!
-//! Both are tiny NTFS alternate data streams (`clip.mp4:ezclip.favorite`),
+//! Both are tiny NTFS alternate data streams (`clip.mp4:shear.favorite`),
 //! so they survive renames and moves in Explorer. On drives without stream
 //! support (FAT/exFAT) favourites fall back to a list in %APPDATA%.
 use std::path::{Path, PathBuf};
 
-const FAV: &str = "ezclip.favorite";
-const MARK: &str = "ezclip.clip";
+const FAV: &str = "shear.favorite";
+const MARK: &str = "shear.clip";
+/// Marker written by versions before the rename (still recognised).
+const LEGACY_MARK: &str = "ezclip.clip";
 
 fn stream(p: &Path, name: &str) -> PathBuf {
     let mut s = p.as_os_str().to_os_string();
@@ -56,7 +58,7 @@ pub fn set_favorite(p: &Path, on: bool) -> bool {
     is_favorite(p) == on
 }
 
-/// Keep the fallback favourites list in step with a rename done by ezclip.
+/// Keep the fallback favourites list in step with a rename done by shear.
 pub fn renamed(from: &Path, to: &Path) {
     let mut list = fav_list();
     if let Some(e) = list.iter_mut().find(|k| **k == key(from)) {
@@ -65,17 +67,17 @@ pub fn renamed(from: &Path, to: &Path) {
     }
 }
 
-pub fn mark_ezclip(p: &Path) {
+pub fn mark_shear(p: &Path) {
     let _ = std::fs::write(stream(p, MARK), b"1");
 }
 
-/// Made by ezclip: has the marker, or (drives without streams) still has
-/// ezclip's "<name> YYYY-MM-DD HH-MM-SS.mp4" file name.
-pub fn is_ezclip(p: &Path) -> bool {
-    has_stream(p, MARK) || has_ezclip_name(p)
+/// Made by Shear (or ezclip before the rename): has the marker, or (drives without streams) still has
+/// shear's "<name> YYYY-MM-DD HH-MM-SS.mp4" file name.
+pub fn is_shear(p: &Path) -> bool {
+    has_stream(p, MARK) || has_stream(p, LEGACY_MARK) || has_shear_name(p)
 }
 
-pub fn has_ezclip_name(p: &Path) -> bool {
+pub fn has_shear_name(p: &Path) -> bool {
     if !p.extension().is_some_and(|e| e.eq_ignore_ascii_case("mp4")) {
         return false;
     }
@@ -99,11 +101,11 @@ pub fn has_ezclip_name(p: &Path) -> bool {
 mod tests {
     use super::*;
     #[test]
-    fn recognises_ezclip_names() {
-        assert!(has_ezclip_name(Path::new("E:\\videos\\Valorant\\Valorant 2026-11-25 21-14-03.mp4")));
-        assert!(has_ezclip_name(Path::new("Desktop 2026-11-25 21-14-03 (2).mp4")));
-        assert!(!has_ezclip_name(Path::new("1v4 clutch.mp4")));
-        assert!(!has_ezclip_name(Path::new("Valorant 2024.01.01 - 12.00.00.01.mp4")));
-        assert!(!has_ezclip_name(Path::new("Valorant 2026-11-25 21-14-03.mkv")));
+    fn recognises_shear_names() {
+        assert!(has_shear_name(Path::new("E:\\videos\\Valorant\\Valorant 2026-11-25 21-14-03.mp4")));
+        assert!(has_shear_name(Path::new("Desktop 2026-11-25 21-14-03 (2).mp4")));
+        assert!(!has_shear_name(Path::new("1v4 clutch.mp4")));
+        assert!(!has_shear_name(Path::new("Valorant 2024.01.01 - 12.00.00.01.mp4")));
+        assert!(!has_shear_name(Path::new("Valorant 2026-11-25 21-14-03.mkv")));
     }
 }

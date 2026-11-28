@@ -18,13 +18,13 @@ pub struct Game {
     pub candidates: Vec<String>,
 }
 
-/// Last foreground window that wasn't ezclip, the taskbar or the desktop.
+/// Last foreground window that wasn't shear, the taskbar or the desktop.
 static LAST_APP: AtomicIsize = AtomicIsize::new(0);
 
 /// Not games: saving while these are in front counts as "Desktop".
 const SHELL_EXES: &[&str] = &[
     "explorer",
-    "ezclip",
+    "shear",
     "searchhost",
     "searchapp",
     "shellexperiencehost",
@@ -67,7 +67,7 @@ unsafe extern "system" fn on_foreground(_: HWINEVENTHOOK, _: u32, hwnd: HWND, _:
 #[derive(PartialEq)]
 enum Kind {
     App,
-    /// ezclip itself or the taskbar/tray: look at what was in front before.
+    /// shear itself or the taskbar/tray: look at what was in front before.
     Ours,
     Desktop,
 }
@@ -83,7 +83,7 @@ fn classify(hwnd: HWND) -> Kind {
     match process_path(hwnd) {
         Some(p) => {
             let stem = p.file_stem().map(|s| s.to_string_lossy().to_lowercase()).unwrap_or_default();
-            if stem == "ezclip" {
+            if stem == "shear" {
                 Kind::Ours
             } else if SHELL_EXES.contains(&stem.as_str()) {
                 Kind::Desktop
@@ -103,7 +103,7 @@ pub fn current() -> Option<Game> {
             Kind::App => {}
             Kind::Desktop => return None,
             Kind::Ours => {
-                // Saved from the tray or ezclip's window: use the app that was
+                // Saved from the tray or shear's window: use the app that was
                 // in front before, if it still exists.
                 hwnd = HWND(LAST_APP.load(Ordering::Relaxed) as _);
                 if hwnd.is_invalid() || !IsWindow(hwnd).as_bool() {

@@ -1,12 +1,12 @@
-//! ezclip — lightweight instant-replay clipper for Windows.
+//! Shear — lightweight instant-replay clipper for Windows.
 //!
 //! One executable, two roles:
-//!   `ezclip.exe --background`  tray recorder (keeps the last N seconds in RAM)
-//!   `ezclip.exe`               opens the window (and starts the recorder if needed)
+//!   `shear.exe --background`  tray recorder (keeps the last N seconds in RAM)
+//!   `shear.exe`               opens the window (and starts the recorder if needed)
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 #[cfg(not(windows))]
-compile_error!("ezclip only supports Windows");
+compile_error!("Shear only supports Windows");
 
 mod audiodev;
 mod cleanup;
@@ -17,6 +17,7 @@ mod display;
 mod game_match;
 mod icon;
 mod log;
+mod migrate;
 mod mp4w;
 mod recorder;
 mod release;
@@ -36,11 +37,19 @@ fn main() {
         log::init("update");
         std::process::exit(update::install_entry(&target));
     }
+    // Renamed from ezclip: continue as shear.exe (same arguments).
+    if let Some(new_exe) = migrate::exe_name() {
+        let _ = std::process::Command::new(new_exe).args(&args).spawn();
+        return;
+    }
     // Restarted after an update: let the old window close first.
     if let Some(pid) = value("--wait-pid").and_then(|p| p.parse().ok()) {
         update::wait_for_pid(pid);
     }
+    let role = if has("--background") { "recorder" } else { "ui" };
+    log::init(role);
     update::cleanup();
+    migrate::run();
 
     // First run: save defaults and start with Windows (can be turned off in Settings).
     if !config::config_path().exists() {
@@ -49,14 +58,12 @@ fn main() {
     }
 
     if has("--background") {
-        log::init("recorder");
         if let Err(e) = recorder::run() {
             log::write(&format!("recorder exited with error: {e:?}"));
         }
         return;
     }
 
-    log::init("ui");
     // Opening the window always makes sure the recorder is running too.
     if !has("--ui") && win::recorder_hwnd().is_none() {
         win::spawn_self("--background");

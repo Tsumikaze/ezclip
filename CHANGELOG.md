@@ -1,11 +1,25 @@
 # Changelog
 
+## 0.6.0
+
+- **ezclip is now Shear**, with a new logo: an open pair of scissors. The app icon is
+  white with a black outline; the tray icon no longer changes colour (hover it for the
+  status).
+- **Your install moves over by itself** the first time Shear runs after updating:
+  - `ezclip.exe` becomes `shear.exe` in the same folder.
+  - Your settings move from `%APPDATA%\ezclip` to `%APPDATA%\shear`.
+  - "Start with Windows" is re-registered as Shear.
+  - Pinned shortcuts to the old `ezclip.exe` need re-pinning.
+- The Update button keeps working through the repository rename to `Tsumikaze/shear`.
+  Clips saved by ezclip are still recognised by auto-cleanup.
+- The app icon is now generated from the same code as the in-app logo at build time.
+
 ## 0.5.0
 
 - **Choose your microphone** (Settings → Audio → *Microphone device*). Until now
-  ezclip always used Windows' *default* recording device, which often isn't the mic
+  Shear always used Windows' *default* recording device, which often isn't the mic
   you talk into (e.g. a webcam mic, or a headset that's only the default for calls).
-  If the chosen mic is unplugged, ezclip uses the default and switches back when it
+  If the chosen mic is unplugged, Shear uses the default and switches back when it
   returns.
 - **Mic volume** (0–300 %), applied live without restarting the replay buffer, with a
   **live level meter**: talk and watch the bar to see that your mic is picked up.
@@ -15,7 +29,7 @@
 - **In-app updates:** Settings → General → *Updates* checks GitHub for a newer
   version, and a green **Update to vX** button appears in the sidebar when one is
   out. One click downloads it, checks it against GitHub's SHA-256 checksum, swaps
-  it in and restarts ezclip. If ezclip lives in a protected folder (e.g. Program
+  it in and restarts Shear. If Shear lives in a protected folder (e.g. Program
   Files), Windows asks for admin rights once. There's an automatic check when the
   window opens, which can be turned off. Nothing runs in the background.
   - This is the last version you need to install by hand: from here on, use the
@@ -30,7 +44,7 @@
 - The trim editor explains when Windows can't show a preview of a clip (HEVC/AV1
   without Microsoft's video extensions) instead of showing a black box. Trimming
   still works in that case.
-- Under the hood: ezclip now reads and writes MP4 files entirely with its own code
+- Under the hood: Shear now reads and writes MP4 files entirely with its own code
   (no third-party MP4 library), shared by saving and trimming.
 
 ## 0.4.1
@@ -48,7 +62,7 @@
 - **AV1 and HEVC recording** (Settings → Video → *Codec*). On GPUs with an AV1 or
   HEVC hardware encoder (like the RX 9070 XT), clips are about 35 % smaller at the same
   quality, and the replay buffer uses less RAM. H.264 stays the default because it plays
-  everywhere. If the chosen encoder isn't available, ezclip records H.264 and says so
+  everywhere. If the chosen encoder isn't available, Shear records H.264 and says so
   in the sidebar.
   - Playing AV1/HEVC clips in Windows' own apps (and their thumbnails) needs
     Microsoft's free *AV1 Video Extension* / the *HEVC Video Extensions*. VLC, mpv,
@@ -77,7 +91,7 @@
 
 ## 0.3.1
 
-Fixes from the first real-hardware test ([#1](https://github.com/Tsumikaze/ezclip/issues/1)):
+Fixes from the first real-hardware test ([#1](https://github.com/Tsumikaze/shear/issues/1)):
 
 - **Fixed: "Show in folder" opened Documents** instead of the clip's folder, for clip
   paths containing spaces. It now asks Windows directly to open the folder with the
@@ -95,13 +109,13 @@ Fixes from the first real-hardware test ([#1](https://github.com/Tsumikaze/ezcli
 
 - **Trim clips** (··· menu → *Trim…*): a preview and a timeline with start/end
   handles. Trimming is lossless and instant: nothing is re-encoded, and the start
-  snaps to the nearest keyframe (every second for ezclip's clips). Save a trimmed copy,
+  snaps to the nearest keyframe (every second for Shear's clips). Save a trimmed copy,
   or replace the original. **I** / **O** set start / end at the playhead.
 - **Favourites:** the ☆ on each clip. Favourites are never removed by auto-cleanup.
   The mark is stored with the file, so it survives renaming it in Explorer.
 - **Auto-cleanup** (Settings → Cleanup, off by default): keep clips under a size
   limit (25–500 GB) and/or delete clips older than 7 days – 1 year, oldest first.
-  Only clips made by ezclip are ever touched, so older videos from other
+  Only clips made by Shear are ever touched, so older videos from other
   recorders in the same folders are safe. Uses the Recycle Bin by default.
   Settings shows exactly what would be removed before you turn it on.
 - **Shrink for Discord** (··· menu): re-encodes on the GPU to fit your upload
@@ -118,7 +132,7 @@ Fixes from the first real-hardware test ([#1](https://github.com/Tsumikaze/ezcli
   into its folder, e.g. `E:\videos\Valorant\Valorant 2026-11-25 21-14-03.mp4`.
   Your existing folders are matched automatically (by window title, the
   game's product name, its install folder and its exe). Games without a folder
-  get a new one (can be turned off). Saving from the tray or the ezclip window
+  get a new one (can be turned off). Saving from the tray or the Shear window
   still uses the game you were just in.
 - **Clips folder path can be typed in** (Settings → Saving), as well as browsed.
 - **Copy** button on every clip: puts the file on the clipboard, ready to paste

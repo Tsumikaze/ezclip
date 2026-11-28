@@ -57,7 +57,7 @@ const CMD_QUIT: usize = 4;
 
 // ------------------------------------------------------------ status file ---
 
-/// Shared status, mirrored to %APPDATA%\ezclip\status.json for the UI.
+/// Shared status, mirrored to %APPDATA%\shear\status.json for the UI.
 #[derive(Clone, Default)]
 pub struct StatusSink(Arc<Mutex<Status>>);
 
@@ -213,7 +213,7 @@ fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> Option<R> {
 }
 
 pub fn run() -> Result<(), String> {
-    let Some(_mutex) = single_instance("Local\\EzClipRecorderMutex") else {
+    let Some(_mutex) = single_instance("Local\\ShearRecorderMutex") else {
         return Ok(()); // already running
     };
     unsafe {
@@ -232,7 +232,7 @@ pub fn run() -> Result<(), String> {
         let hwnd = CreateWindowExW(
             WINDOW_EX_STYLE(0),
             RECORDER_CLASS,
-            w!("ezclip recorder"),
+            w!("Shear recorder"),
             WS_OVERLAPPED,
             0,
             0,
@@ -250,9 +250,9 @@ pub fn run() -> Result<(), String> {
         let status = StatusSink::default();
         let buf = Arc::new(ClipBuffer::default());
         let icons = [
-            state_icon(crate::icon::State::Recording),
-            state_icon(crate::icon::State::Starting),
-            state_icon(crate::icon::State::Problem),
+            tray_icon(),
+            tray_icon(),
+            tray_icon(),
         ];
         let taskbar_created = RegisterWindowMessageW(w!("TaskbarCreated"));
         game::start_tracking();
@@ -300,10 +300,12 @@ pub fn run() -> Result<(), String> {
     Ok(())
 }
 
-/// Tray icon for a recorder state, drawn at the system's small-icon size.
-unsafe fn state_icon(state: crate::icon::State) -> HICON {
+/// Drawn at the system small-icon size.
+/// The tray icon: the scissors app icon, the same in every state (the state
+/// is in the tooltip).
+unsafe fn tray_icon() -> HICON {
     let size = GetSystemMetrics(SM_CXSMICON).clamp(16, 64) as u32;
-    let rgba = crate::icon::rgba_state(size, state);
+    let rgba = crate::icon::app_icon_rgba(size);
     let mut bgra = Vec::with_capacity(rgba.len());
     for p in rgba.chunks(4) {
         bgra.extend_from_slice(&[p[2], p[1], p[0], p[3]]);
@@ -364,12 +366,12 @@ fn base_nid(s: &State) -> NOTIFYICONDATAW {
 fn tooltip(s: &State) -> String {
     use crate::icon::State as T;
     match s.tray_state {
-        T::Recording => format!("ezclip · recording\n{} saves the last {} s", s.cfg.hotkey.label(), s.cfg.clip_seconds),
-        T::Starting => "ezclip · starting…".to_string(),
+        T::Recording => format!("Shear · recording\n{} saves the last {} s", s.cfg.hotkey.label(), s.cfg.clip_seconds),
+        T::Starting => "Shear · starting…".to_string(),
         T::Problem => {
             let e = s.status.get().error;
             let short: String = e.chars().take(100).collect();
-            format!("ezclip · problem\n{short}")
+            format!("Shear · problem\n{short}")
         }
     }
 }
@@ -478,7 +480,7 @@ fn write_clip(job: &SaveJob) -> Result<Saved, String> {
         let _ = std::fs::remove_file(&job.path);
     }
     std::fs::rename(&tmp, &job.path).map_err(|e| e.to_string())?;
-    crate::clipmeta::mark_ezclip(&job.path);
+    crate::clipmeta::mark_shear(&job.path);
     Ok(Saved { path: job.path.clone(), secs, extended: job.extended })
 }
 
@@ -501,7 +503,7 @@ fn save_clip(s: &mut State) {
     }
 
     let Some(snap) = s.buf.snapshot(s.cfg.clip_seconds) else {
-        notify(s, "Nothing to save yet", "ezclip is still starting up — try again in a moment.");
+        notify(s, "Nothing to save yet", "Shear is still starting up — try again in a moment.");
         return;
     };
     let path = game::clip_path(&s.cfg);
@@ -564,7 +566,7 @@ fn show_menu(hwnd: HWND, hotkey: &str) -> usize {
     unsafe {
         let Ok(menu) = CreatePopupMenu() else { return 0 };
         let save = crate::win::wide(&format!("Save clip\t{hotkey}"));
-        let _ = AppendMenuW(menu, MF_STRING, CMD_OPEN, w!("Open ezclip"));
+        let _ = AppendMenuW(menu, MF_STRING, CMD_OPEN, w!("Open Shear"));
         let _ = AppendMenuW(menu, MF_STRING, CMD_SAVE, PCWSTR(save.as_ptr()));
         let _ = AppendMenuW(menu, MF_STRING, CMD_FOLDER, w!("Open clips folder"));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
@@ -610,15 +612,15 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             with_state(|s| on_saved(s));
             LRESULT(0)
         }
-        WM_EZ_RELOAD => {
+        WM_SHEAR_RELOAD => {
             with_state(reload);
             LRESULT(0)
         }
-        WM_EZ_SAVE => {
+        WM_SHEAR_SAVE => {
             with_state(save_clip);
             LRESULT(0)
         }
-        WM_EZ_QUIT => {
+        WM_SHEAR_QUIT => {
             PostQuitMessage(0);
             LRESULT(0)
         }

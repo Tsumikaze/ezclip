@@ -1,5 +1,5 @@
 //! Auto-cleanup: keeps the clips folder under a size and/or age limit by
-//! removing the oldest clips. Only clips made by ezclip are considered, and
+//! removing the oldest clips. Only clips made by shear are considered, and
 //! favourites are never removed.
 use crate::clipmeta;
 use crate::config::Config;
@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime};
 pub struct Plan {
     /// Oldest first.
     pub remove: Vec<(PathBuf, u64)>,
-    pub ezclip_bytes: u64,
+    pub shear_bytes: u64,
 }
 
 impl Plan {
@@ -25,7 +25,7 @@ struct Entry {
     favorite: bool,
 }
 
-fn ezclip_clips(cfg: &Config) -> Vec<Entry> {
+fn shear_clips(cfg: &Config) -> Vec<Entry> {
     let mut dirs = vec![cfg.clips_dir.clone()];
     if let Ok(rd) = std::fs::read_dir(&cfg.clips_dir) {
         dirs.extend(rd.flatten().filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false)).map(|e| e.path()));
@@ -36,7 +36,7 @@ fn ezclip_clips(cfg: &Config) -> Vec<Entry> {
         for e in rd.flatten() {
             let path = e.path();
             let Ok(meta) = e.metadata() else { continue };
-            if !meta.is_file() || !path.extension().is_some_and(|x| x.eq_ignore_ascii_case("mp4")) || !clipmeta::is_ezclip(&path) {
+            if !meta.is_file() || !path.extension().is_some_and(|x| x.eq_ignore_ascii_case("mp4")) || !clipmeta::is_shear(&path) {
                 continue;
             }
             out.push(Entry {
@@ -53,7 +53,7 @@ fn ezclip_clips(cfg: &Config) -> Vec<Entry> {
 
 /// What cleanup would remove right now (used for the Settings preview too).
 pub fn plan(cfg: &Config) -> Plan {
-    let clips = ezclip_clips(cfg);
+    let clips = shear_clips(cfg);
     let total: u64 = clips.iter().map(|e| e.size).sum();
     let mut remove = vec![false; clips.len()];
     if cfg.cleanup_max_days > 0 {
@@ -79,7 +79,7 @@ pub fn plan(cfg: &Config) -> Plan {
     }
     Plan {
         remove: clips.into_iter().zip(remove).filter(|(_, r)| *r).map(|(e, _)| (e.path, e.size)).collect(),
-        ezclip_bytes: total,
+        shear_bytes: total,
     }
 }
 

@@ -1,4 +1,4 @@
-//! Settings, persisted as JSON in %APPDATA%\ezclip\config.json.
+//! Settings, persisted as JSON in %APPDATA%\shear\config.json.
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -197,7 +197,7 @@ pub struct Config {
     /// 0–100.
     pub save_volume: u32,
     pub notify_on_save: bool,
-    /// Auto-cleanup of old ezclip clips (favourites are kept).
+    /// Auto-cleanup of old shear clips (favourites are kept).
     pub cleanup_enabled: bool,
     /// 0 = no size limit.
     pub cleanup_max_gb: u32,
@@ -228,7 +228,7 @@ impl Default for Config {
             mic_device: None,
             mic_volume: 100,
             hotkey: Hotkey::default(),
-            clips_dir: crate::win::videos_dir().join("ezclip"),
+            clips_dir: crate::win::videos_dir().join("Shear"),
             game_folders: true,
             new_game_folders: true,
             copy_after_save: false,
@@ -285,7 +285,7 @@ pub fn app_dir() -> PathBuf {
     std::env::var_os("APPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir)
-        .join("ezclip")
+        .join("shear")
 }
 
 pub fn config_path() -> PathBuf {

@@ -1,12 +1,12 @@
 [package]
-name = "ezclip"
-version = "0.5.0"
+name = "shear"
+version = "0.6.0"
 edition = "2021"
 description = "Lightweight instant-replay clipper for Windows"
 build = "build.rs"
 
 [[bin]]
-name = "ezclip"
+name = "shear"
 path = "src/main.rs"
 
 [dependencies]

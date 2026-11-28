@@ -1,4 +1,4 @@
-//! The ezclip window: a Clips library and a Settings page.
+//! The shear window: a Clips library and a Settings page.
 //! Runs as its own short-lived process, so it costs nothing when closed.
 mod clips;
 mod editor;
@@ -122,20 +122,20 @@ struct App {
 }
 
 pub fn run() -> Result<(), String> {
-    let Some(_mutex) = win::single_instance("Local\\EzClipUiMutex") else {
+    let Some(_mutex) = win::single_instance("Local\\ShearUiMutex") else {
         win::focus_existing_ui();
         return Ok(());
     };
-    let icon = egui::IconData { rgba: crate::icon::rgba(64), width: 64, height: 64 };
+    let icon = egui::IconData { rgba: crate::icon::app_icon_rgba(64), width: 64, height: 64 };
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("ezclip")
+            .with_title("Shear")
             .with_inner_size([1000.0, 660.0])
             .with_min_inner_size([780.0, 500.0])
             .with_icon(icon),
         ..Default::default()
     };
-    eframe::run_native("ezclip", opts, Box::new(|cc| Ok(Box::new(App::new(cc))))).map_err(|e| e.to_string())
+    eframe::run_native("shear", opts, Box::new(|cc| Ok(Box::new(App::new(cc))))).map_err(|e| e.to_string())
 }
 
 impl App {
@@ -146,7 +146,7 @@ impl App {
         lib.scan(&cfg.clips_dir);
         let logo = cc.egui_ctx.load_texture(
             "logo",
-            egui::ColorImage::from_rgba_unmultiplied([64, 64], &crate::icon::rgba(64)),
+            egui::ColorImage::from_rgba_unmultiplied([64, 64], &crate::icon::logo_rgba(64)),
             egui::TextureOptions::LINEAR,
         );
         let monitors = crate::display::monitors()
@@ -210,7 +210,7 @@ impl App {
         if let Err(e) = self.cfg.save() {
             self.toast(format!("Couldn't save settings: {e}"));
         }
-        win::post_to_recorder(win::WM_EZ_RELOAD);
+        win::post_to_recorder(win::WM_SHEAR_RELOAD);
     }
 
     fn toast(&mut self, s: impl Into<String>) {
@@ -240,7 +240,7 @@ impl App {
         ui.horizontal(|ui| {
             ui.add(egui::Image::new(&self.logo).fit_to_exact_size(Vec2::splat(26.0)));
             ui.add_space(2.0);
-            ui.label(RichText::new("ezclip").size(20.0).family(bold()).color(TEXT));
+            ui.label(RichText::new("shear").size(20.0).family(bold()).color(TEXT));
             ui.label(RichText::new(concat!("v", env!("CARGO_PKG_VERSION"))).size(11.5).color(TEXT_FAINT));
         });
         self.sidebar_update(ui);
@@ -323,7 +323,7 @@ impl App {
         let w = ui.available_width();
         if self.recorder_running {
             if primary_button(ui, &format!("Save last {}", fmt_secs(self.cfg.clip_seconds)), w).clicked() {
-                win::post_to_recorder(win::WM_EZ_SAVE);
+                win::post_to_recorder(win::WM_SHEAR_SAVE);
                 self.toast("Saving clip…");
                 self.last_scan = Instant::now() - Duration::from_secs(1);
             }
@@ -981,7 +981,7 @@ impl App {
             section_title(ui, "Cleanup");
             let before = (self.cfg.cleanup_enabled, self.cfg.cleanup_max_gb, self.cfg.cleanup_max_days, self.cfg.clips_dir.clone());
             card(ui, |ui| {
-                setting_row(ui, "Auto-delete old clips", "Only ezclip's clips. Favourites are kept", |ui| {
+                setting_row(ui, "Auto-delete old clips", "Only Shear's clips. Favourites are kept", |ui| {
                     changed |= toggle(ui, &mut self.cfg.cleanup_enabled).changed();
                 });
                 divider(ui);
@@ -1033,7 +1033,7 @@ impl App {
                     |ui| {
                         if self.recorder_running {
                             if button(ui, "Stop").clicked() {
-                                win::post_to_recorder(win::WM_EZ_QUIT);
+                                win::post_to_recorder(win::WM_SHEAR_QUIT);
                                 self.last_status = Instant::now() - Duration::from_millis(700);
                             }
                         } else if button(ui, "Start").clicked() {
@@ -1050,7 +1050,7 @@ impl App {
                     Upd::UpToDate => format!("v{current} is the latest version"),
                     Upd::Available(r) => format!("v{} is available (you have v{current})", r.version),
                     Upd::Downloading(p) => format!("Downloading… {:.0} %", p * 100.0),
-                    Upd::Installing => "Installing, ezclip restarts by itself".to_string(),
+                    Upd::Installing => "Installing, Shear restarts by itself".to_string(),
                     Upd::Failed(e) => format!("Update failed: {e}"),
                 };
                 let mut action: Option<u8> = None; // 1 check, 2 update, 3 what's new, 4 releases
@@ -1095,7 +1095,7 @@ impl App {
                             win::open_url(&r.page);
                         }
                     }
-                    Some(4) => win::open_url("https://github.com/Tsumikaze/ezclip/releases"),
+                    Some(4) => win::open_url("https://github.com/Tsumikaze/shear/releases"),
                     _ => {}
                 }
                 divider(ui);
@@ -1299,7 +1299,7 @@ impl App {
                     .fill(GREEN)
                     .rounding(R)
                     .min_size(Vec2::new(ui.available_width(), 30.0));
-                if ui.add(b).on_hover_text("Downloads the new version from GitHub and restarts ezclip").clicked() {
+                if ui.add(b).on_hover_text("Downloads the new version from GitHub and restarts Shear").clicked() {
                     start = Some(rel.clone());
                 }
             }
@@ -1573,7 +1573,7 @@ impl eframe::App for App {
 /// One-line preview of what auto-cleanup does with the current settings.
 fn cleanup_summary(cfg: &Config) -> (String, bool) {
     let plan = crate::cleanup::plan(cfg);
-    let used = format!("Clips made by ezclip use {}.", fmt_size(plan.ezclip_bytes));
+    let used = format!("Clips made by shear use {}.", fmt_size(plan.shear_bytes));
     let limits_off = cfg.cleanup_max_gb == 0 && cfg.cleanup_max_days == 0;
     if limits_off {
         return (format!("{used} No limits set."), false);
@@ -1590,18 +1590,18 @@ fn cleanup_summary(cfg: &Config) -> (String, bool) {
 }
 
 /// Lossless trim on a background thread. A copy goes next to the original as
-/// "<name> (trim).mp4"; replacing keeps the original's favourite/ezclip flags.
+/// "<name> (trim).mp4"; replacing keeps the original's favourite/shear flags.
 fn trim_job(src: &std::path::Path, start: f64, end: f64, replace: bool) -> Result<PathBuf, String> {
     use crate::clipmeta;
     if replace {
         let fav = clipmeta::is_favorite(src);
-        let ours = clipmeta::is_ezclip(src);
+        let ours = clipmeta::is_shear(src);
         crate::clipfile::trim(src, src, start, end)?;
         if fav {
             clipmeta::set_favorite(src, true);
         }
         if ours {
-            clipmeta::mark_ezclip(src);
+            clipmeta::mark_shear(src);
         }
         Ok(src.to_path_buf())
     } else {
@@ -1613,7 +1613,7 @@ fn trim_job(src: &std::path::Path, start: f64, end: f64, replace: bool) -> Resul
             n += 1;
         }
         crate::clipfile::trim(src, &dst, start, end)?;
-        clipmeta::mark_ezclip(&dst);
+        clipmeta::mark_shear(&dst);
         Ok(dst)
     }
 }

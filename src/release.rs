@@ -1,14 +1,17 @@
 //! Reading GitHub's "latest release" answer and comparing versions.
 //! Pure logic, no Windows calls.
 
-pub const REPO: &str = "Tsumikaze/ezclip";
-pub const ASSET: &str = "ezclip.exe";
+/// The GitHub repository, new name first. The old name ("ezclip") still works
+/// before the repository is renamed, and GitHub redirects it afterwards.
+pub const REPOS: [&str; 2] = ["Tsumikaze/shear", "Tsumikaze/ezclip"];
+/// Release file names, preferred first ("ezclip.exe" for releases made before the rename).
+pub const ASSETS: [&str; 2] = ["shear.exe", "ezclip.exe"];
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Release {
     /// "0.5.0"
     pub version: String,
-    /// Direct download of ezclip.exe.
+    /// Direct download of shear.exe.
     pub url: String,
     pub size: u64,
     /// Hex SHA-256 published by GitHub, if any.
@@ -21,14 +24,14 @@ pub struct Release {
 pub fn parse_latest(json: &str) -> Result<Release, String> {
     let v: serde_json::Value = serde_json::from_str(json).map_err(|e| format!("unexpected answer from GitHub: {e}"))?;
     let tag = v["tag_name"].as_str().ok_or("GitHub didn't say which version is the latest")?;
-    let asset = v["assets"]
-        .as_array()
-        .and_then(|a| a.iter().find(|a| a["name"].as_str() == Some(ASSET)))
-        .ok_or("the latest release has no ezclip.exe yet. Try again in a few minutes")?;
+    let assets = v["assets"].as_array().cloned().unwrap_or_default();
+    let asset = ASSETS
+        .iter()
+        .find_map(|name| assets.iter().find(|a| a["name"].as_str() == Some(name)))
+        .ok_or("the latest release has no shear.exe yet. Try again in a few minutes")?;
     let url = asset["browser_download_url"].as_str().ok_or("download link missing")?.to_string();
-    // Only ever download from this repository's releases on GitHub.
-    let expected = format!("https://github.com/{REPO}/releases/download/");
-    if !url.starts_with(&expected) {
+    // Only ever download from this project's releases on GitHub.
+    if !REPOS.iter().any(|r| url.starts_with(&format!("https://github.com/{r}/releases/download/"))) {
         return Err("unexpected download location".into());
     }
     Ok(Release {
@@ -64,17 +67,22 @@ mod tests {
 
     #[test]
     fn parses_github_answer() {
-        let json = r#"{"tag_name":"v0.5.0","html_url":"https://github.com/Tsumikaze/ezclip/releases/tag/v0.5.0",
+        let json = r#"{"tag_name":"v0.6.0","html_url":"https://github.com/Tsumikaze/shear/releases/tag/v0.6.0",
             "assets":[{"name":"other.zip","browser_download_url":"https://x"},
-                      {"name":"ezclip.exe","size":4473856,"digest":"sha256:CC73EB",
-                       "browser_download_url":"https://github.com/Tsumikaze/ezclip/releases/download/v0.5.0/ezclip.exe"}]}"#;
+                      {"name":"ezclip.exe","size":1,"browser_download_url":"https://github.com/Tsumikaze/shear/releases/download/v0.6.0/ezclip.exe"},
+                      {"name":"shear.exe","size":4473856,"digest":"sha256:CC73EB",
+                       "browser_download_url":"https://github.com/Tsumikaze/shear/releases/download/v0.6.0/shear.exe"}]}"#;
         let r = parse_latest(json).unwrap();
-        assert_eq!(r.version, "0.5.0");
+        assert_eq!(r.version, "0.6.0");
         assert_eq!(r.size, 4473856);
         assert_eq!(r.sha256.as_deref(), Some("cc73eb"));
-        assert!(r.url.ends_with("/v0.5.0/ezclip.exe"));
+        assert!(r.url.ends_with("/v0.6.0/shear.exe"), "prefers shear.exe");
+        // releases from before the rename (old repo, ezclip.exe) are still accepted
+        let old = r#"{"tag_name":"v0.5.0","assets":[{"name":"ezclip.exe","size":2,
+            "browser_download_url":"https://github.com/Tsumikaze/ezclip/releases/download/v0.5.0/ezclip.exe"}]}"#;
+        assert!(parse_latest(old).unwrap().url.ends_with("/ezclip.exe"));
         // a download link pointing anywhere else is refused
-        let bad = json.replace("https://github.com/Tsumikaze/ezclip/releases/download/", "https://evil.example/");
+        let bad = json.replace("https://github.com/Tsumikaze/shear/releases/download/", "https://evil.example/");
         assert!(parse_latest(&bad).is_err());
         assert!(parse_latest(r#"{"tag_name":"v1.0.0","assets":[]}"#).is_err());
     }

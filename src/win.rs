@@ -7,13 +7,13 @@ use windows::Win32::System::Registry::*;
 use windows::Win32::UI::Shell::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-pub const RECORDER_CLASS: PCWSTR = w!("EzClipRecorderWindow");
-pub const WM_EZ_RELOAD: u32 = WM_APP + 1;
-pub const WM_EZ_SAVE: u32 = WM_APP + 2;
-pub const WM_EZ_QUIT: u32 = WM_APP + 3;
+pub const RECORDER_CLASS: PCWSTR = w!("ShearRecorderWindow");
+pub const WM_SHEAR_RELOAD: u32 = WM_APP + 1;
+pub const WM_SHEAR_SAVE: u32 = WM_APP + 2;
+pub const WM_SHEAR_QUIT: u32 = WM_APP + 3;
 
 const RUN_KEY: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
-const RUN_VALUE: PCWSTR = w!("ezclip");
+const RUN_VALUE: PCWSTR = w!("shear");
 
 pub fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -54,6 +54,20 @@ pub fn videos_dir() -> PathBuf {
 fn startup_command() -> Option<String> {
     let exe = std::env::current_exe().ok()?;
     Some(format!("\"{}\" --background", exe.display()))
+}
+
+/// Remove the "Start with Windows" entry of the old name (ezclip).
+/// Returns true if there was one.
+pub fn remove_legacy_startup() -> bool {
+    unsafe {
+        let mut key = HKEY::default();
+        if RegOpenKeyExW(HKEY_CURRENT_USER, RUN_KEY, 0, KEY_READ | KEY_WRITE, &mut key).is_err() {
+            return false;
+        }
+        let existed = RegDeleteValueW(key, w!("ezclip")).is_ok();
+        let _ = RegCloseKey(key);
+        existed
+    }
 }
 
 pub fn startup_enabled() -> bool {
@@ -182,10 +196,10 @@ pub fn pick_folder(start: &Path) -> Option<PathBuf> {
     }
 }
 
-/// Bring an already-open ezclip window to the front (used for single-instance UI).
+/// Bring an already-open shear window to the front (used for single-instance UI).
 pub fn focus_existing_ui() {
     unsafe {
-        if let Ok(h) = FindWindowW(PCWSTR::null(), w!("ezclip")) {
+        if let Ok(h) = FindWindowW(PCWSTR::null(), w!("Shear")) {
             if !h.is_invalid() {
                 let _ = ShowWindow(h, SW_RESTORE);
                 let _ = SetForegroundWindow(h);

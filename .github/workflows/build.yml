@@ -1,6 +1,6 @@
 name: build
 
-# Every push builds and tests ezclip.exe on Windows. On main, if Cargo.toml's
+# Every push builds and tests shear.exe on Windows. On main, if Cargo.toml's
 # version has no GitHub release yet, the build is published as release
 # v<version> with the matching section of CHANGELOG.md as its notes.
 on:
@@ -25,8 +25,8 @@ jobs:
         run: cargo build --release
       - uses: actions/upload-artifact@v4
         with:
-          name: ezclip
-          path: target/release/ezclip.exe
+          name: shear
+          path: target/release/shear.exe
       - name: Publish release (if this version is new)
         # Only main publishes. The work branch is pushed with the same commit,
         # and two runs racing to create the same release would fail one of them.
@@ -45,10 +45,13 @@ jobs:
             if ($in) { $notes += $l }
           }
           $notes += ""
-          $notes += "**Install:** download ``ezclip.exe`` below, put it somewhere permanent (e.g. ``C:\Program Files\ezclip\``) and double-click it."
+          $notes += "**Install:** download ``shear.exe`` below, put it somewhere permanent (e.g. ``C:\Program Files\Shear\``) and double-click it. Already installed? Use the Update button in the app."
           $notes -join "`n" | Out-File -Encoding utf8 notes.md
-          Copy-Item target/release/ezclip.exe ezclip.exe
-          gh release create $tag ezclip.exe --target $env:GITHUB_SHA --title "ezclip $ver" --notes-file notes.md --latest
+          Copy-Item target/release/shear.exe shear.exe
+          # Transition from the old name: ezclip v0.5.0's updater downloads "ezclip.exe",
+          # so publish the same build under that name too. Remove once nobody runs ezclip.
+          Copy-Item target/release/shear.exe ezclip.exe
+          gh release create $tag shear.exe ezclip.exe --target $env:GITHUB_SHA --title "Shear $ver" --notes-file notes.md --latest
           if ($LASTEXITCODE -ne 0) {
             # Someone else created it in the meantime: that's fine.
             gh release view $tag *> $null

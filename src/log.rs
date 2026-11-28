@@ -1,4 +1,4 @@
-//! Tiny file logger (%APPDATA%\ezclip\<role>.log). There is no console, so
+//! Tiny file logger (%APPDATA%\shear\<role>.log). There is no console, so
 //! this is the only place errors end up besides the status shown in the UI.
 use std::io::Write;
 use std::sync::Mutex;

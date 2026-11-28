@@ -1,8 +1,8 @@
-//! In-app updates: ask GitHub for the latest release, download ezclip.exe,
+//! In-app updates: ask GitHub for the latest release, download shear.exe,
 //! verify it, swap it in place of the running exe, and restart.
 //!
 //! Windows lets a running exe be *renamed* (not overwritten), so the swap is:
-//! ezclip.exe → ezclip.exe.old, new file → ezclip.exe. If the folder needs
+//! shear.exe → shear.exe.old, new file → shear.exe. If the folder needs
 //! admin rights (e.g. Program Files), the downloaded exe is started elevated
 //! with `--install-update <target>` to do the same swap.
 use crate::release::{self, Release};
@@ -37,7 +37,7 @@ fn get(url: &str, accept: &str, mut progress: impl FnMut(u64, Option<u64>)) -> R
         None => (rest, "/"),
     };
     unsafe {
-        let agent = HSTRING::from(format!("ezclip/{}", env!("CARGO_PKG_VERSION")));
+        let agent = HSTRING::from(format!("shear/{}", env!("CARGO_PKG_VERSION")));
         let session = H(WinHttpOpen(&agent, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, PCWSTR::null(), PCWSTR::null(), 0));
         if session.0.is_null() {
             return Err(format!("can't start a connection ({})", windows::core::Error::from_win32()));
@@ -92,13 +92,21 @@ fn get(url: &str, accept: &str, mut progress: impl FnMut(u64, Option<u64>)) -> R
 
 /// Ask GitHub for the latest release.
 pub fn check() -> Result<Release> {
-    let url = format!("https://api.github.com/repos/{}/releases/latest", release::REPO);
-    let body = get(&url, "application/vnd.github+json", |_, _| {})?;
-    release::parse_latest(&String::from_utf8_lossy(&body))
+    // New repository name first; fall back to the old one (before the rename).
+    let mut last = String::new();
+    for repo in release::REPOS {
+        let url = format!("https://api.github.com/repos/{repo}/releases/latest");
+        match get(&url, "application/vnd.github+json", |_, _| {}) {
+            Ok(body) => return release::parse_latest(&String::from_utf8_lossy(&body)),
+            Err(e) if e.contains("no release found") => last = e,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last)
 }
 
 fn update_dir() -> PathBuf {
-    std::env::temp_dir().join("ezclip-update")
+    std::env::temp_dir().join("shear-update")
 }
 
 /// Download and verify the new exe. Returns where it was saved.
@@ -121,7 +129,7 @@ pub fn download(rel: &Release, mut progress: impl FnMut(f32)) -> Result<PathBuf>
     }
     let dir = update_dir();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let path = dir.join(format!("ezclip-{}.exe", rel.version));
+    let path = dir.join(format!("shear-{}.exe", rel.version));
     std::fs::write(&path, &data).map_err(|e| format!("can't save the download: {e}"))?;
     Ok(path)
 }
@@ -149,7 +157,7 @@ pub fn install(new_exe: &Path) -> Result<PathBuf> {
             run_elevated(new_exe, &target)?;
             Ok(target)
         }
-        Err(e) => Err(format!("couldn't replace ezclip.exe: {e}")),
+        Err(e) => Err(format!("couldn't replace shear.exe: {e}")),
     }
 }
 
@@ -182,7 +190,7 @@ fn run_elevated(new_exe: &Path, target: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Entry point for `ezclip.exe --install-update <target>` (run elevated).
+/// Entry point for `shear.exe --install-update <target>` (run elevated).
 pub fn install_entry(target: &str) -> i32 {
     let Ok(me) = std::env::current_exe() else { return 1 };
     match swap(&me, Path::new(target)) {
@@ -196,7 +204,7 @@ pub fn install_entry(target: &str) -> i32 {
 
 /// Stop the old recorder, start the new version (recorder + window), and exit.
 pub fn restart(target: &Path) -> ! {
-    crate::win::post_to_recorder(crate::win::WM_EZ_QUIT);
+    crate::win::post_to_recorder(crate::win::WM_SHEAR_QUIT);
     for _ in 0..50 {
         if crate::win::recorder_hwnd().is_none() {
             break;
@@ -224,6 +232,8 @@ pub fn wait_for_pid(pid: u32) {
 pub fn cleanup() {
     if let Ok(me) = std::env::current_exe() {
         let _ = std::fs::remove_file(me.with_extension("exe.old"));
+        // Left over by an update installed under the old name.
+        let _ = std::fs::remove_file(me.with_file_name("ezclip.exe.old"));
     }
     let _ = std::fs::remove_dir_all(update_dir());
 }
