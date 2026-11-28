@@ -10,7 +10,7 @@ use super::encoder::{AacEncoder, AUDIO_RATE};
 use super::mux::AAC_FRAME;
 use super::StatusSink;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use windows::core::{Result, PWSTR};
@@ -43,12 +43,31 @@ struct Device {
     id: String,
     channels: usize,
     rate: u32,
+    bits: u16,
     fmt: SampleFmt,
+}
+
+/// Microphone choice for the audio thread.
+pub struct MicParams {
+    /// Device id; None = Windows' default microphone.
+    pub device: Option<String>,
+    /// Volume in percent, changed live by the recorder on settings reload.
+    pub gain: Arc<AtomicU32>,
 }
 
 struct Source {
     kind: Kind,
     dev: Option<Device>,
+    /// Mic only: the chosen device (None = default) and its live volume.
+    wanted: Option<String>,
+    gain: Option<Arc<AtomicU32>>,
+    /// Why the device isn't working, or a note (e.g. fell back to default).
+    problem: Option<String>,
+    /// Using the default mic because the chosen one isn't available.
+    fell_back: bool,
+    /// Any non-zero sample since opening (all zeros = muted or blocked).
+    heard: bool,
+    opened_at: Instant,
     /// Stereo frames at 48 kHz, waiting to be mixed.
     fifo: VecDeque<[f32; 2]>,
     /// Timeline position (in 48 kHz samples since pipeline start) of fifo[0].
@@ -60,38 +79,86 @@ struct Source {
 }
 
 impl Source {
-    fn new(kind: Kind) -> Self {
-        let mut s = Self { kind, dev: None, fifo: VecDeque::new(), fifo_pos: None, prev: [0.0; 2], frac: 0.0, last_check: Instant::now() };
+    fn new(kind: Kind, mic: Option<&MicParams>) -> Self {
+        let mut s = Self {
+            kind,
+            dev: None,
+            wanted: mic.and_then(|m| m.device.clone()),
+            gain: mic.map(|m| m.gain.clone()),
+            problem: None,
+            fell_back: false,
+            heard: false,
+            opened_at: Instant::now(),
+            fifo: VecDeque::new(),
+            fifo_pos: None,
+            prev: [0.0; 2],
+            frac: 0.0,
+            last_check: Instant::now(),
+        };
         s.reopen();
         s
+    }
+
+    /// Human status for the sidebar.
+    fn describe(&self) -> String {
+        let name = if self.kind == Kind::Loopback { "System audio" } else { "Microphone" };
+        if self.dev.is_none() {
+            return format!("{name} ({})", self.problem.as_deref().unwrap_or("unavailable"));
+        }
+        if self.kind == Kind::Mic && !self.heard && self.opened_at.elapsed() > Duration::from_secs(8) {
+            return format!("{name} (silent: muted, or the wrong device?)");
+        }
+        match &self.problem {
+            Some(p) => format!("{name} ({p})"),
+            None => name.to_string(),
+        }
     }
 
     fn reopen(&mut self) {
         self.dev = None;
         self.fifo.clear();
         self.fifo_pos = None;
-        match unsafe { open_device(self.kind) } {
+        self.heard = false;
+        self.opened_at = Instant::now();
+        self.fell_back = false;
+        let label = if self.kind == Kind::Loopback { "system" } else { "mic" };
+        let mut result = unsafe { open_device(self.kind, self.wanted.as_deref()) };
+        if let (Err(e), Some(id)) = (&result, &self.wanted) {
+            // The chosen mic is unplugged or gone: use the default until it's back.
+            crate::log::write(&format!("audio mic '{id}' unavailable ({e}); using the default mic"));
+            result = unsafe { open_device(self.kind, None) };
+            self.fell_back = result.is_ok();
+        }
+        match result {
             Ok(d) => {
-                crate::log::write(&format!(
-                    "audio {}: {} Hz, {} ch",
-                    if self.kind == Kind::Loopback { "system" } else { "mic" },
-                    d.rate,
-                    d.channels
-                ));
+                crate::log::write(&format!("audio {label}: {} Hz, {} ch, {} bit, id {}", d.rate, d.channels, d.bits, d.id));
+                self.problem = self.fell_back.then(|| "chosen mic not found, using the default".to_string());
                 self.dev = Some(d);
             }
-            Err(e) => crate::log::write(&format!("audio open failed: {e}")),
+            Err(e) => {
+                let why = crate::audiodev::explain(&e);
+                crate::log::write(&format!("audio {label} open failed: {why} ({e})"));
+                self.problem = Some(why);
+            }
         }
         self.last_check = Instant::now();
     }
 
     /// Every few seconds: follow the Windows default device (e.g. user
-    /// switched from speakers to headset) and recover from errors.
+    /// switched from speakers to headset), retry a chosen mic that was
+    /// unplugged, and recover from errors.
     fn maintain(&mut self) {
         if self.last_check.elapsed() < Duration::from_secs(3) {
             return;
         }
         self.last_check = Instant::now();
+        if self.wanted.is_some() {
+            // A specific mic was chosen: reopen if it failed or we're on the fallback.
+            if self.dev.is_none() || self.fell_back {
+                self.reopen();
+            }
+            return;
+        }
         let current = unsafe { default_device_id(self.kind).ok() };
         let changed = match (&self.dev, &current) {
             (Some(d), Some(id)) => &d.id != id,
@@ -109,6 +176,7 @@ impl Source {
     fn poll(&mut self, clock: &Clock) {
         let Some(dev) = &self.dev else { return };
         let mut packets: Vec<(Option<u64>, Vec<[f32; 2]>)> = Vec::new();
+        let mut heard = false;
         let rate = dev.rate;
         let result: Result<()> = unsafe {
             (|| loop {
@@ -125,11 +193,15 @@ impl Source {
                 let ts_ok = flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0 as u32 == 0 && qpc != 0;
                 let mut buf = Vec::with_capacity(frames as usize);
                 convert(data, frames as usize, dev.channels, dev.fmt, silent, &mut buf);
+                if !silent && buf.iter().any(|f| f[0] != 0.0 || f[1] != 0.0) {
+                    heard = true;
+                }
                 dev.capture.ReleaseBuffer(frames)?;
                 let pos = if ts_ok { clock.qpc_to_sample(qpc as i64) } else { None };
                 packets.push((pos, buf));
             })()
         };
+        self.heard |= heard;
         if let Err(e) = result {
             crate::log::write(&format!("audio capture error ({e}), reopening"));
             self.dev = None;
@@ -179,11 +251,12 @@ impl Source {
             }
         }
         let offset = (pos - from) as usize;
+        let gain = self.gain.as_ref().map(|g| g.load(Ordering::Relaxed) as f32 / 100.0).unwrap_or(1.0);
         if offset < out.len() {
             let n = (out.len() - offset).min(self.fifo.len());
             for (m, v) in out[offset..offset + n].iter_mut().zip(self.fifo.drain(..n)) {
-                m[0] += v[0];
-                m[1] += v[1];
+                m[0] += v[0] * gain;
+                m[1] += v[1] * gain;
             }
             pos += n as u64;
         }
@@ -274,9 +347,13 @@ unsafe fn default_device_id(kind: Kind) -> Result<String> {
     Ok(s)
 }
 
-unsafe fn open_device(kind: Kind) -> Result<Device> {
-    let enumr: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
-    let dev = enumr.GetDefaultAudioEndpoint(if kind == Kind::Loopback { eRender } else { eCapture }, eConsole)?;
+unsafe fn open_device(kind: Kind, mic_id: Option<&str>) -> Result<Device> {
+    let dev = if kind == Kind::Mic {
+        crate::audiodev::open_capture(mic_id)?
+    } else {
+        let enumr: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
+        enumr.GetDefaultAudioEndpoint(eRender, eConsole)?
+    };
     let idp: PWSTR = dev.GetId()?;
     let id = idp.to_string().unwrap_or_default();
     CoTaskMemFree(Some(idp.0 as _));
@@ -305,7 +382,7 @@ unsafe fn open_device(kind: Kind) -> Result<Device> {
     r?;
     let capture: IAudioCaptureClient = client.GetService()?;
     client.Start()?;
-    Ok(Device { client, capture, id, channels: channels.max(1), rate, fmt })
+    Ok(Device { client, capture, id, channels: channels.max(1), rate, bits: wf.wBitsPerSample, fmt })
 }
 
 impl Drop for Device {
@@ -316,7 +393,7 @@ impl Drop for Device {
     }
 }
 
-pub fn thread_main(system: bool, mic: bool, start: Instant, stop: Arc<AtomicBool>, buf: Arc<ClipBuffer>, status: StatusSink) {
+pub fn thread_main(system: bool, mic: Option<MicParams>, start: Instant, stop: Arc<AtomicBool>, buf: Arc<ClipBuffer>, status: StatusSink) {
     unsafe {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
     }
@@ -330,19 +407,12 @@ pub fn thread_main(system: bool, mic: bool, start: Instant, stop: Arc<AtomicBool
     };
     let mut sources = Vec::new();
     if system {
-        sources.push(Source::new(Kind::Loopback));
+        sources.push(Source::new(Kind::Loopback, None));
     }
-    if mic {
-        sources.push(Source::new(Kind::Mic));
+    if let Some(m) = &mic {
+        sources.push(Source::new(Kind::Mic, Some(m)));
     }
-    let describe = |sources: &Vec<Source>| {
-        let mut parts = Vec::new();
-        for s in sources {
-            let name = if s.kind == Kind::Loopback { "System audio" } else { "Microphone" };
-            parts.push(if s.dev.is_some() { name.to_string() } else { format!("{name} (unavailable)") });
-        }
-        parts.join(" + ")
-    };
+    let describe = |sources: &Vec<Source>| sources.iter().map(|s| s.describe()).collect::<Vec<_>>().join(" + ");
     let mut described = describe(&sources);
     status.audio(&described);
 

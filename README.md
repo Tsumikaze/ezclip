@@ -62,7 +62,7 @@ notifications on. The tray icon's dot shows the state: **red** = recording,
 - **Frame rate**: 30, 60, 120, 144
 - **Codec**: H.264 (plays everywhere), HEVC or AV1 (about 35 % smaller; needs a GPU that encodes them, else H.264 is used)
 - **Quality**: Low / Medium / High / Ultra. The page shows the bitrate and how much RAM the buffer uses.
-- **Audio**: system audio and/or microphone (mixed into one track)
+- **Audio**: system audio and/or microphone (mixed into one track). Pick which mic, set its volume, and watch the live level meter to check it works
 - **Sharing**: your Discord upload limit (10 / 50 / 500 MB presets, or any custom size). *Copy* and *Shrink for Discord* fit clips to it
 - **Cleanup** (off by default): keep clips under a size limit and/or delete clips older
   than N days, oldest first. Only clips made by ezclip are touched (older videos from
@@ -86,7 +86,18 @@ Hotkey ─► copy buffer ─► MP4 (no re-encoding, ~50 ms for a 30 s clip)
   process that only exists while it's open.
 - RAM use is roughly `bitrate × clip length` (about 180 MB for 30 s of 1440p60 on *High*).
 
+## Updating
+
+ezclip can update itself: **Settings → General → Updates → Check for updates**, or click the
+green **Update to vX** button that appears in the sidebar when a new version is out. It
+downloads `ezclip.exe` from this repository's releases, verifies its SHA-256, swaps it in and
+restarts. (Versions before 0.5.0 must be updated by hand once.)
+
 ## Troubleshooting
+
+- *Microphone isn't recorded*: in **Settings → Audio**, pick the right **Microphone device** and
+  talk: the level bar should move. If it says *blocked by Windows privacy settings*, click
+  **Open privacy settings** and turn on *Let desktop apps access your microphone*.
 
 - **Settings → General → Logs** opens `%APPDATA%\ezclip`, which contains `recorder.log` and `ui.log`.
 - *Hotkey is used by another app*: pick a different one in Settings

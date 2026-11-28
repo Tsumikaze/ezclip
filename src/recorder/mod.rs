@@ -105,6 +105,8 @@ impl StatusSink {
 struct Pipeline {
     stop: Arc<AtomicBool>,
     threads: Vec<JoinHandle<()>>,
+    /// Mic volume in percent, applied live by the audio thread.
+    mic_gain: Arc<std::sync::atomic::AtomicU32>,
 }
 
 impl Pipeline {
@@ -124,9 +126,11 @@ impl Pipeline {
                     .unwrap(),
             );
         }
+        let mic_gain = Arc::new(std::sync::atomic::AtomicU32::new(cfg.mic_volume));
         if cfg.system_audio || cfg.microphone {
             let (stop, buf, status) = (stop.clone(), buf.clone(), status.clone());
-            let (sys, mic) = (cfg.system_audio, cfg.microphone);
+            let sys = cfg.system_audio;
+            let mic = cfg.microphone.then(|| audio::MicParams { device: cfg.mic_device.clone(), gain: mic_gain.clone() });
             threads.push(
                 std::thread::Builder::new()
                     .name("audio".into())
@@ -136,7 +140,7 @@ impl Pipeline {
         } else {
             status.audio("Off");
         }
-        Self { stop, threads }
+        Self { stop, threads, mic_gain }
     }
 
     fn stop(self) {
@@ -538,6 +542,9 @@ fn reload(s: &mut State) {
     let restart = new.capture_key() != s.cfg.capture_key();
     let hotkey_changed = new.hotkey != s.cfg.hotkey;
     s.buf.set_keep_seconds(new.clip_seconds + EXTEND_SECS);
+    if let Some(p) = &s.pipeline {
+        p.mic_gain.store(new.mic_volume, Ordering::Relaxed);
+    }
     s.cfg = new;
     if restart {
         crate::log::write("capture settings changed, restarting pipeline");

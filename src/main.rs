@@ -8,6 +8,7 @@
 #[cfg(not(windows))]
 compile_error!("ezclip only supports Windows");
 
+mod audiodev;
 mod cleanup;
 mod clipfile;
 mod clipmeta;
@@ -18,13 +19,28 @@ mod icon;
 mod log;
 mod mp4w;
 mod recorder;
+mod release;
+mod sha256;
 mod sound;
 mod ui;
+mod update;
 mod win;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let has = |f: &str| args.iter().any(|a| a.eq_ignore_ascii_case(f));
+    let value = |f: &str| args.iter().position(|a| a.eq_ignore_ascii_case(f)).and_then(|i| args.get(i + 1)).cloned();
+
+    // Updater, elevated: copy this (new) exe over the installed one, then exit.
+    if let Some(target) = value("--install-update") {
+        log::init("update");
+        std::process::exit(update::install_entry(&target));
+    }
+    // Restarted after an update: let the old window close first.
+    if let Some(pid) = value("--wait-pid").and_then(|p| p.parse().ok()) {
+        update::wait_for_pid(pid);
+    }
+    update::cleanup();
 
     // First run: save defaults and start with Windows (can be turned off in Settings).
     if !config::config_path().exists() {

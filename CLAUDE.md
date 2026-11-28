@@ -19,7 +19,7 @@ cargo build --release --target x86_64-pc-windows-gnu   # -> target/x86_64-pc-win
 
 On Windows, `cargo build --release` and `cargo test --release` work directly. A single test runs with `cargo test --release trims_to_window_on_keyframes`.
 
-Unit tests live in `src/recorder/buffer.rs`, `src/game_match.rs` and `src/clipmeta.rs`. These files, plus `src/clipfile.rs`, `src/mp4w.rs`, `src/recorder/mux.rs` and `src/cleanup.rs`, use no Windows APIs, but they sit in a Windows-only crate, so on Linux:
+Unit tests live in `src/recorder/buffer.rs`, `src/game_match.rs`, `src/clipmeta.rs`, `src/sha256.rs` and `src/release.rs`. These files, plus `src/clipfile.rs`, `src/mp4w.rs`, `src/recorder/mux.rs` and `src/cleanup.rs`, use no Windows APIs, but they sit in a Windows-only crate, so on Linux:
 - `cargo test --target x86_64-pc-windows-gnu --no-run` only checks that the tests compile.
 - To run them, include those files with `#[path]` in a scratch crate, with tiny stubs for `crate::win` / `crate::log` where needed.
 
@@ -58,6 +58,8 @@ Work happens on `claude/clipping-program-rust-cpp-fyfxy6`. `main` is the repo's 
   - The encoder uses a 1 s GOP, no B-frames and low-latency mode, so decode order equals display order.
   - Desktop size or format changes rebuild only the video processor; the encoder's output size stays fixed.
 - `audio.rs` (one thread): WASAPI loopback plus an optional mic, polled every 10 ms.
+  - The mic is `Config::mic_device` (an MMDevice id, opened through `audiodev.rs`), or Windows' default when that's `None`. If the chosen mic is missing it falls back to the default and retries every 3 s. Its volume is an `Arc<AtomicU32>` (percent) that `reload()` updates live, so it isn't part of `capture_key()`.
+  - Each source's `describe()` feeds the sidebar status. It reports privacy blocks (`E_ACCESSDENIED`), missing devices, and mics that delivered only exact zeros (muted or blocked).
   - Each packet is placed on the timeline by its **QPC capture timestamp** (`Clock`), not by arrival time. This keeps sync when loopback is silent or a device starts late.
   - The mixer emits exactly `elapsed × 48 kHz` samples, padding silence, then encodes to AAC with the Media Foundation AAC MFT.
   - It follows default-device changes.
@@ -83,6 +85,9 @@ Work happens on `claude/clipping-program-rust-cpp-fyfxy6`. `main` is the repo's 
 - `clipmeta.rs`: two per-clip flags stored as NTFS alternate data streams (`clip.mp4:ezclip.favorite`, `clip.mp4:ezclip.clip`), so they survive renames in Explorer. Favourites fall back to `%APPDATA%\ezclip\favorites.json` on drives without streams. "Made by ezclip" falls back to the `<name> YYYY-MM-DD HH-MM-SS.mp4` file name pattern.
 - `cleanup.rs`: `plan()` is a dry run, also used for the Settings preview; `run()` applies it. It only touches clips `clipmeta::is_ezclip` accepts (the user's clips folder also holds other recorders' videos) and never favourites. The recorder runs it on its saver thread at startup, after each save and on reload.
 
+- `audiodev.rs`: lists microphones (id + friendly name) and opens one by id or the default. `explain()` turns WASAPI errors into user-facing reasons.
+- `release.rs` (pure): parses GitHub's `releases/latest` JSON, accepts only `ezclip.exe` from this repo's release downloads, and compares versions. `sha256.rs` (pure) verifies downloads against the asset's `digest`.
+- `update.rs`: in-app updates over WinHTTP. `check()` → `download()` (size, SHA-256 and `MZ` checks, saved to `%TEMP%\ezclip-update`) → `install()`, which renames the running exe to `.exe.old` and copies the new one in. On `PermissionDenied` it reruns the downloaded exe elevated with `--install-update <target>`. `restart()` quits the recorder and starts `--background`, then `--ui --wait-pid <old pid>`. `main.rs` handles those flags and calls `update::cleanup()` at every start.
 - `sound.rs`: the save sounds (Chirp/Click/Bell/Rise), generated as in-memory WAVs at the chosen volume and played with `PlaySound`. The recorder plays them on save, the window plays previews.
 
 ### UI (`src/ui/`)
@@ -90,6 +95,8 @@ Work happens on `claude/clipping-program-rust-cpp-fyfxy6`. `main` is the repo's 
 - `media.rs`: Media Foundation in the window process. `FrameGrabber` is a worker that decodes single frames (source reader → RGB32) for the trim preview and keeps only the newest request. `HoverGrabber` decodes 8 small keyframe-only frames of the hovered clip for thumbnail scrubbing; hovering another clip abandons the current one. `shrink` is "Shrink for Discord": source reader (advanced video processing: scale + NV12) → sink writer (hardware H.264 + AAC). It picks resolution and fps from the bitrate budget and retries with a lower bitrate if the file comes out too big.
 - `player.rs`: playback in the trim editor. A video thread (source reader with advanced video processing → RGB32 at ≤960×540, frames shown when due, late frames dropped) and an audio thread (source reader → 48 kHz float → WASAPI render with AUTOCONVERTPCM) share one start `Instant`. Dropping the `Player` stops both.
 - `editor.rs`: the trim view (`Page::Editor`). Works for any codec; when Windows can't decode a preview (HEVC/AV1 without Microsoft's extensions), it says so over the picture. Space or the Play button plays from the playhead, *Play selection* plays start→end, and touching the timeline pauses. Trim and shrink jobs run on threads and report back over channels drained in `App::pump_jobs`.
+- `micmeter.rs`: the live mic level in Settings. It's a separate WASAPI capture of the selected device that runs only while Settings is open with the mic on, and is dropped otherwise.
+- `mod.rs` also holds the update state machine (`Upd`/`UpdMsg`): an automatic check when the window opens if `check_updates` is on, a green sidebar button when an update is available, and the Updates row in General.
 - `theme.rs` / `widgets.rs`: the black theme loads Segoe UI from `C:\Windows\Fonts` when available. It provides custom chips, a toggle, cards and `setting_row`.
 
 egui layout pitfalls already hit here:

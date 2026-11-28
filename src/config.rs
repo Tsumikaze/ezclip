@@ -180,6 +180,10 @@ pub struct Config {
     pub monitor: u32,
     pub system_audio: bool,
     pub microphone: bool,
+    /// Recording device id; None = Windows' default microphone.
+    pub mic_device: Option<String>,
+    /// Microphone volume in percent (100 = as recorded).
+    pub mic_volume: u32,
     pub hotkey: Hotkey,
     pub clips_dir: PathBuf,
     /// Save into a subfolder matching the game (e.g. E:\videos\Valorant).
@@ -206,6 +210,8 @@ pub struct Config {
     pub copy_after_shrink: bool,
     /// The Copy button shrinks clips that are over the Discord limit first.
     pub copy_fits_discord: bool,
+    /// Look for a newer version on GitHub when the window opens.
+    pub check_updates: bool,
 }
 
 impl Default for Config {
@@ -219,6 +225,8 @@ impl Default for Config {
             monitor: 0,
             system_audio: true,
             microphone: false,
+            mic_device: None,
+            mic_volume: 100,
             hotkey: Hotkey::default(),
             clips_dir: crate::win::videos_dir().join("ezclip"),
             game_folders: true,
@@ -235,6 +243,7 @@ impl Default for Config {
             discord_limit_mb: 10,
             copy_after_shrink: true,
             copy_fits_discord: true,
+            check_updates: true,
         }
     }
 }
@@ -260,8 +269,10 @@ impl Config {
     }
 
     /// Settings whose change requires restarting the capture pipeline.
-    pub fn capture_key(&self) -> (u32, Resolution, Quality, Codec, u32, bool, bool) {
-        (self.fps, self.resolution, self.quality, self.codec, self.monitor, self.system_audio, self.microphone)
+    /// (Mic volume is applied live and isn't part of it.)
+    #[allow(clippy::type_complexity)]
+    pub fn capture_key(&self) -> (u32, Resolution, Quality, Codec, u32, bool, bool, Option<String>) {
+        (self.fps, self.resolution, self.quality, self.codec, self.monitor, self.system_audio, self.microphone, self.mic_device.clone())
     }
 
     /// Video bitrate for an output size with the chosen quality and codec.

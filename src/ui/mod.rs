@@ -3,6 +3,7 @@
 mod clips;
 mod editor;
 mod media;
+mod micmeter;
 mod player;
 mod theme;
 mod widgets;
@@ -51,6 +52,24 @@ impl Sort {
 
 type TrimResult = Result<(PathBuf, bool), String>;
 
+/// In-app update state.
+enum Upd {
+    Idle,
+    Checking,
+    UpToDate,
+    Available(crate::release::Release),
+    Downloading(f32),
+    Installing,
+    Failed(String),
+}
+
+enum UpdMsg {
+    Checked(Result<crate::release::Release, String>, bool),
+    Progress(f32),
+    Installing,
+    Installed(Result<PathBuf, String>),
+}
+
 struct App {
     cfg: Config,
     page: Page,
@@ -93,6 +112,13 @@ struct App {
     /// Clips whose frames can't be decoded (don't keep asking).
     hover_failed: std::collections::HashSet<PathBuf>,
     hover_requested: Option<PathBuf>,
+    // microphone settings
+    mics: Option<(Vec<crate::audiodev::AudioDevice>, Option<crate::audiodev::AudioDevice>)>,
+    mic_meter: Option<micmeter::MicMeter>,
+    // updates
+    upd: Upd,
+    upd_tx: Sender<UpdMsg>,
+    upd_rx: Receiver<UpdMsg>,
 }
 
 pub fn run() -> Result<(), String> {
@@ -130,6 +156,7 @@ impl App {
             .collect();
         let folder_edit = cfg.clips_dir.display().to_string();
         let (trim_tx, trim_rx) = channel();
+        let (upd_tx, upd_rx) = channel();
         let (shrink_tx, shrink_rx) = channel();
         let mut app = Self {
             ctx: cc.egui_ctx.clone(),
@@ -151,6 +178,11 @@ impl App {
             hover_frames: HashMap::new(),
             hover_failed: Default::default(),
             hover_requested: None,
+            mics: None,
+            mic_meter: None,
+            upd: Upd::Idle,
+            upd_tx,
+            upd_rx,
             cfg,
             page: Page::Clips,
             lib,
@@ -168,6 +200,9 @@ impl App {
             logo,
         };
         app.poll_status();
+        if app.cfg.check_updates {
+            app.check_for_update(false);
+        }
         app
     }
 
@@ -208,6 +243,7 @@ impl App {
             ui.label(RichText::new("ezclip").size(20.0).family(bold()).color(TEXT));
             ui.label(RichText::new(concat!("v", env!("CARGO_PKG_VERSION"))).size(11.5).color(TEXT_FAINT));
         });
+        self.sidebar_update(ui);
         ui.add_space(26.0);
 
         let count = self.lib.clips.len();
@@ -814,9 +850,12 @@ impl App {
                     changed |= toggle(ui, &mut self.cfg.system_audio).changed();
                 });
                 divider(ui);
-                setting_row(ui, "Microphone", "Mixed in with system audio (default mic)", |ui| {
+                setting_row(ui, "Microphone", "Mixed in with system audio", |ui| {
                     changed |= toggle(ui, &mut self.cfg.microphone).changed();
                 });
+                if self.cfg.microphone {
+                    self.mic_settings(ui, &mut changed);
+                }
             });
 
             section_title(ui, "Saving");
@@ -1004,10 +1043,64 @@ impl App {
                     },
                 );
                 divider(ui);
-                setting_row(ui, "Version", concat!("ezclip ", env!("CARGO_PKG_VERSION")), |ui| {
-                    if button(ui, "Releases").clicked() {
-                        win::open_url("https://github.com/Tsumikaze/ezclip/releases");
+                let current = env!("CARGO_PKG_VERSION");
+                let desc = match &self.upd {
+                    Upd::Idle => format!("You're on v{current}"),
+                    Upd::Checking => "Checking GitHub…".to_string(),
+                    Upd::UpToDate => format!("v{current} is the latest version"),
+                    Upd::Available(r) => format!("v{} is available (you have v{current})", r.version),
+                    Upd::Downloading(p) => format!("Downloading… {:.0} %", p * 100.0),
+                    Upd::Installing => "Installing, ezclip restarts by itself".to_string(),
+                    Upd::Failed(e) => format!("Update failed: {e}"),
+                };
+                let mut action: Option<u8> = None; // 1 check, 2 update, 3 what's new, 4 releases
+                setting_row(ui, "Updates", &desc, |ui| match &self.upd {
+                    Upd::Available(_) => {
+                        if button(ui, "What's new").clicked() {
+                            action = Some(3);
+                        }
+                        let b = egui::Button::new(RichText::new("Update now").color(Color32::BLACK).family(bold()).size(13.0))
+                            .fill(ACCENT)
+                            .rounding(6.0)
+                            .min_size(Vec2::new(0.0, 30.0));
+                        if ui.add(b).clicked() {
+                            action = Some(2);
+                        }
                     }
+                    Upd::Checking | Upd::Installing => {
+                        ui.spinner();
+                    }
+                    Upd::Downloading(p) => {
+                        ui.add(egui::ProgressBar::new(*p).desired_width(160.0).desired_height(6.0));
+                    }
+                    _ => {
+                        if button(ui, "Releases").clicked() {
+                            action = Some(4);
+                        }
+                        if button(ui, "Check for updates").clicked() {
+                            action = Some(1);
+                        }
+                    }
+                });
+                match action {
+                    Some(1) => self.check_for_update(true),
+                    Some(2) => {
+                        if let Upd::Available(r) = &self.upd {
+                            let r = r.clone();
+                            self.start_update(r);
+                        }
+                    }
+                    Some(3) => {
+                        if let Upd::Available(r) = &self.upd {
+                            win::open_url(&r.page);
+                        }
+                    }
+                    Some(4) => win::open_url("https://github.com/Tsumikaze/ezclip/releases"),
+                    _ => {}
+                }
+                divider(ui);
+                setting_row(ui, "Check for updates automatically", "When this window opens", |ui| {
+                    changed |= toggle(ui, &mut self.cfg.check_updates).changed();
                 });
                 divider(ui);
                 setting_row(ui, "Logs", "For troubleshooting", |ui| {
@@ -1127,6 +1220,173 @@ impl App {
                     self.lib.scan(&self.cfg.clips_dir);
                 }
             }
+        }
+    }
+
+    // ------------------------------------------------------------ updates --
+
+    fn check_for_update(&mut self, manual: bool) {
+        self.upd = Upd::Checking;
+        let (tx, ctx) = (self.upd_tx.clone(), self.ctx.clone());
+        std::thread::spawn(move || {
+            let _ = tx.send(UpdMsg::Checked(crate::update::check(), manual));
+            ctx.request_repaint();
+        });
+    }
+
+    fn start_update(&mut self, rel: crate::release::Release) {
+        crate::log::write(&format!("update: installing v{} from {}", rel.version, rel.url));
+        self.upd = Upd::Downloading(0.0);
+        let (tx, ctx) = (self.upd_tx.clone(), self.ctx.clone());
+        std::thread::spawn(move || {
+            unsafe {
+                let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_APARTMENTTHREADED);
+            }
+            let result = crate::update::download(&rel, |p| {
+                let _ = tx.send(UpdMsg::Progress(p));
+                ctx.request_repaint();
+            })
+            .and_then(|path| {
+                let _ = tx.send(UpdMsg::Installing);
+                ctx.request_repaint();
+                crate::update::install(&path)
+            });
+            let _ = tx.send(UpdMsg::Installed(result));
+            ctx.request_repaint();
+        });
+    }
+
+    fn pump_update(&mut self) {
+        while let Ok(m) = self.upd_rx.try_recv() {
+            match m {
+                UpdMsg::Checked(Ok(rel), manual) => {
+                    if crate::release::is_newer(&rel.version, env!("CARGO_PKG_VERSION")) {
+                        self.upd = Upd::Available(rel);
+                    } else {
+                        self.upd = Upd::UpToDate;
+                        if manual {
+                            self.toast("You're on the latest version");
+                        }
+                    }
+                }
+                UpdMsg::Checked(Err(e), manual) => {
+                    crate::log::write(&format!("update check: {e}"));
+                    // Automatic checks fail silently (e.g. offline).
+                    self.upd = if manual { Upd::Failed(e) } else { Upd::Idle };
+                }
+                UpdMsg::Progress(p) => self.upd = Upd::Downloading(p),
+                UpdMsg::Installing => self.upd = Upd::Installing,
+                UpdMsg::Installed(Ok(target)) => {
+                    crate::log::write("update: installed, restarting");
+                    crate::update::restart(&target);
+                }
+                UpdMsg::Installed(Err(e)) => {
+                    crate::log::write(&format!("update failed: {e}"));
+                    self.toast(format!("Update failed: {e}"));
+                    self.upd = Upd::Failed(e);
+                }
+            }
+        }
+    }
+
+    /// Small "update available" control under the logo.
+    fn sidebar_update(&mut self, ui: &mut egui::Ui) {
+        let mut start = None;
+        match &self.upd {
+            Upd::Available(rel) => {
+                ui.add_space(10.0);
+                let b = egui::Button::new(RichText::new(format!("Update to v{}", rel.version)).color(Color32::BLACK).family(bold()).size(13.0))
+                    .fill(GREEN)
+                    .rounding(R)
+                    .min_size(Vec2::new(ui.available_width(), 30.0));
+                if ui.add(b).on_hover_text("Downloads the new version from GitHub and restarts ezclip").clicked() {
+                    start = Some(rel.clone());
+                }
+            }
+            Upd::Downloading(p) => {
+                ui.add_space(10.0);
+                ui.add(egui::ProgressBar::new(*p).desired_height(6.0));
+                ui.label(RichText::new(format!("Downloading update… {:.0} %", p * 100.0)).size(12.0).color(TEXT_DIM));
+            }
+            Upd::Installing => {
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(RichText::new("Installing update…").size(12.0).color(TEXT_DIM));
+                });
+            }
+            _ => {}
+        }
+        if let Some(rel) = start {
+            self.start_update(rel);
+        }
+    }
+
+    /// Microphone device picker, volume and live level meter.
+    fn mic_settings(&mut self, ui: &mut egui::Ui, changed: &mut bool) {
+        let (list, default) = self.mics.get_or_insert_with(|| (crate::audiodev::microphones(), crate::audiodev::default_microphone())).clone();
+        let default_label = match &default {
+            Some(d) => format!("Windows default ({})", d.name),
+            None => "Windows default".to_string(),
+        };
+        divider(ui);
+        setting_row(ui, "Microphone device", "Pick the mic you actually talk into", |ui| {
+            if button(ui, "Refresh").on_hover_text("Look for newly plugged-in mics").clicked() {
+                self.mics = None;
+            }
+            let selected = match &self.cfg.mic_device {
+                None => default_label.clone(),
+                Some(id) => list.iter().find(|d| &d.id == id).map(|d| d.name.clone()).unwrap_or_else(|| "Chosen mic (not connected)".into()),
+            };
+            egui::ComboBox::from_id_salt("mic_device").selected_text(selected).width(260.0).show_ui(ui, |ui| {
+                if ui.selectable_label(self.cfg.mic_device.is_none(), &default_label).clicked() && self.cfg.mic_device.is_some() {
+                    self.cfg.mic_device = None;
+                    *changed = true;
+                }
+                for d in &list {
+                    let on = self.cfg.mic_device.as_deref() == Some(d.id.as_str());
+                    if ui.selectable_label(on, &d.name).clicked() && !on {
+                        self.cfg.mic_device = Some(d.id.clone());
+                        *changed = true;
+                    }
+                }
+            });
+        });
+
+        // Keep a meter running on the selected device while this is on screen.
+        if self.mic_meter.as_ref().map(|m| m.device != self.cfg.mic_device).unwrap_or(true) {
+            self.mic_meter = Some(micmeter::MicMeter::start(self.cfg.mic_device.clone(), self.ctx.clone()));
+        }
+        let gain = self.cfg.mic_volume as f32 / 100.0;
+        let (level, error) = self.mic_meter.as_ref().map(|m| (m.level() * gain, m.error())).unwrap_or((0.0, None));
+
+        divider(ui);
+        setting_row(ui, "Mic volume", "Talk: the bar shows how loud you'll be", |ui| {
+            // Level bar (rightmost), then the slider.
+            let (r, _) = ui.allocate_exact_size(Vec2::new(110.0, 8.0), Sense::hover());
+            ui.painter().rect_filled(r, 4.0, Color32::from_rgb(40, 40, 40));
+            let fill = egui::Rect::from_min_size(r.min, Vec2::new(r.width() * level.clamp(0.0, 1.0), r.height()));
+            let color = if level >= 0.99 { RED } else if level > 0.7 { AMBER } else { GREEN };
+            ui.painter().rect_filled(fill, 4.0, color);
+            ui.add_space(10.0);
+            ui.spacing_mut().slider_width = 150.0;
+            let r = ui.add(egui::Slider::new(&mut self.cfg.mic_volume, 0..=300).suffix(" %"));
+            if r.drag_stopped() || (r.changed() && !r.dragged()) {
+                *changed = true;
+            }
+        });
+        if let Some(e) = error {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("Can't open this microphone: {e}.")).size(12.5).color(AMBER));
+                if e.contains("privacy") && button(ui, "Open privacy settings").clicked() {
+                    win::open_url("ms-settings:privacy-microphone");
+                }
+            });
+            ui.label(
+                RichText::new("In Windows Settings > Privacy > Microphone, turn on \"Let desktop apps access your microphone\".")
+                    .size(12.0)
+                    .color(TEXT_FAINT),
+            );
         }
     }
 
@@ -1262,6 +1522,10 @@ impl eframe::App for App {
         self.lib.pump(ctx);
         self.pump_jobs();
         self.pump_hover();
+        self.pump_update();
+        if self.page != Page::Settings || !self.cfg.microphone {
+            self.mic_meter = None;
+        }
         self.capture_hotkey(ctx);
         // Light polling only while the window is open.
         ctx.request_repaint_after(Duration::from_millis(1000));

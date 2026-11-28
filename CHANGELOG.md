@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.5.0
+
+- **Choose your microphone** (Settings → Audio → *Microphone device*). Until now
+  ezclip always used Windows' *default* recording device, which often isn't the mic
+  you talk into (e.g. a webcam mic, or a headset that's only the default for calls).
+  If the chosen mic is unplugged, ezclip uses the default and switches back when it
+  returns.
+- **Mic volume** (0–300 %), applied live without restarting the replay buffer, with a
+  **live level meter**: talk and watch the bar to see that your mic is picked up.
+- **Clear microphone problems:** the sidebar and Settings now say *why* the mic isn't
+  recording: "blocked by Windows privacy settings" (with a button to open them),
+  "device not found", or "silent: muted, or the wrong device?".
+- **In-app updates:** Settings → General → *Updates* checks GitHub for a newer
+  version, and a green **Update to vX** button appears in the sidebar when one is
+  out. One click downloads it, checks it against GitHub's SHA-256 checksum, swaps
+  it in and restarts ezclip. If ezclip lives in a protected folder (e.g. Program
+  Files), Windows asks for admin rights once. There's an automatic check when the
+  window opens, which can be turned off. Nothing runs in the background.
+  - This is the last version you need to install by hand: from here on, use the
+    Update button.
+
 ## 0.4.2
 
 - **Trim now works on HEVC and AV1 clips too.** In fact it works on any MP4, whatever

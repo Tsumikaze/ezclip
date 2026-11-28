@@ -8,7 +8,7 @@ Per-version details are in [CHANGELOG.md](../CHANGELOG.md). Downloads are on the
 
 | | |
 | --- | --- |
-| Latest release | **v0.4.2** (2026-11-27) |
+| Latest release | **v0.5.0** (2026-11-28) |
 | Builds | Every push is built and tested on Windows by GitHub Actions ([build](https://github.com/Tsumikaze/ezclip/actions/workflows/build.yml)); a new version number publishes a release automatically |
 | Tested on real Windows | **In review.** The main features are confirmed working with v0.3.2 on the developer's PC (i7-12700K, RX 9070 XT, Windows 10); the less critical checks are still open in [#1](https://github.com/Tsumikaze/ezclip/issues/1) |
 
@@ -22,6 +22,8 @@ Development happens in a Linux cloud environment, cross-compiling for Windows:
   B-frames. The HEVC/AV1 config boxes are byte-identical to ffmpeg's. Trimming was tested
   on ezclip's own H.264/HEVC/AV1 clips and on ffmpeg-made files, then re-trimmed and
   trimmed in place.
+- **Updates:** the release reader and SHA-256 were checked against GitHub's live answer
+  and the real v0.4.2 download (checksum matches GitHub's digest).
 - **Auto-cleanup:** checked on a mock folder (age limit, size limit, favourites,
   renamed clips, other recorders' files).
 - **UI:** rendered and inspected as screenshots.
@@ -32,6 +34,10 @@ tracked in [#1](https://github.com/Tsumikaze/ezclip/issues/1), which stays open 
 the owner has gone through them.
 
 ## Done
+
+### v0.5.0
+- [x] Microphone device picker, live mic volume, level meter, and clear mic diagnostics
+- [x] In-app updates from GitHub releases (SHA-256 verified, elevates only if needed)
 
 ### v0.4.2
 - [x] Trim works on every codec and recorder: HEVC and AV1 too, B-frames, multiple audio tracks
